@@ -116,6 +116,20 @@ if INSTALL_ROOT="$work_dir/install" \
 fi
 grep -Fq 'unsafe download directory ancestry' "$work_dir/parent-output"
 
+mkdir -p "$work_dir/group-writable"
+chmod 0777 "$work_dir/group-writable"
+if INSTALL_ROOT="$work_dir/install" \
+  ASSET_SOURCE="$work_dir/assets" \
+  PATH="$work_dir/bin:$PATH" \
+  "$script_dir/install-rhythm-from-release.sh" \
+    --tag v0.1.0-rhythm-beta.2 \
+    --release-json "$work_dir/fixtures/0.1.0-rhythm-beta.2.json" \
+    --download-dir "$work_dir/group-writable/downloads" > "$work_dir/group-output" 2>&1; then
+  echo "installer unexpectedly accepted group/world-writable download ancestry" >&2
+  exit 1
+fi
+grep -Fq 'group/world writable' "$work_dir/group-output"
+
 archive_sentinel="$work_dir/archive-sentinel.txt"
 printf 'must-survive-archive\n' > "$archive_sentinel"
 ln -s "$archive_sentinel" "$work_dir/downloads/stepmania-flatpak-launcher-0.1.0-rhythm-beta.2.tar.gz"
