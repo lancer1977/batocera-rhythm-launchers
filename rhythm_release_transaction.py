@@ -11,6 +11,7 @@ import os
 from pathlib import PurePosixPath
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import tarfile
@@ -115,13 +116,25 @@ def create_stage(root_fd: int, root_path: str) -> tuple[int, str]:
         except FileExistsError:
             continue
         try:
+            created_stat = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
             stage_fd = os.open(
                 name,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                 dir_fd=root_fd,
             )
+            opened_stat = os.fstat(stage_fd)
+            if (
+                not stat.S_ISDIR(created_stat.st_mode)
+                or (created_stat.st_dev, created_stat.st_ino)
+                != (opened_stat.st_dev, opened_stat.st_ino)
+            ):
+                os.close(stage_fd)
+                raise RuntimeError("release staging directory was replaced during creation")
         except Exception:
-            os.rmdir(name, dir_fd=root_fd)
+            try:
+                os.rmdir(name, dir_fd=root_fd)
+            except OSError:
+                pass
             raise
         return stage_fd, os.path.join(root_path, name)
     raise RuntimeError("unable to choose a private release staging directory")
