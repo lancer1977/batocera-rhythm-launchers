@@ -32,6 +32,12 @@ install, launch, lifecycle, and recovery surface.
 - `config.example`: non-secret runtime defaults for the target host.
 - `payload/`: operator notes staged with the bundle.
 
+Re-running `install.sh` for a beta upgrade preserves an existing
+`/userdata/system/share/stepmania-flatpak-launcher/config.env`, including
+host-specific display and pipeline settings. To deliberately replace it with
+the bundle defaults, run the installer with `RHYTHM_RESET_CONFIG=1`; this is an
+explicit reset and should be followed by reviewing the resulting file.
+
 ## Runtime shape
 
 The service defaults to:

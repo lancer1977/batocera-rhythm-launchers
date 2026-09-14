@@ -15,13 +15,18 @@ if [ -z "$USERDATA_ROOT" ]; then
 fi
 PORTS_ROOT="${PORTS_ROOT:-$USERDATA_ROOT/roms/ports}"
 PORTS_LAUNCHER_NAME="${PORTS_LAUNCHER_NAME:-StepMania.sh}"
+RHYTHM_RESET_CONFIG="${RHYTHM_RESET_CONFIG:-0}"
 
 mkdir -p "$SERVICE_DIR" "$BUNDLE_ROOT" "$BUNDLE_ROOT/Songs" "$PORTS_ROOT"
 
 install -m 0755 "$SOURCE_DIR/service.sh" "$SERVICE_DIR/$SERVICE_NAME"
 install -m 0755 "$SOURCE_DIR/ports-launcher.sh" "$PORTS_ROOT/$PORTS_LAUNCHER_NAME"
 install -m 0755 "$SOURCE_DIR/apply-controller-map.sh" "$BUNDLE_ROOT/apply-controller-map.sh"
-cp "$SOURCE_DIR/config.example" "$BUNDLE_ROOT/config.env"
+if [ "$RHYTHM_RESET_CONFIG" = "1" ] || [ ! -e "$BUNDLE_ROOT/config.env" ]; then
+  cp "$SOURCE_DIR/config.example" "$BUNDLE_ROOT/config.env"
+else
+  echo "Preserving existing ${BUNDLE_ROOT}/config.env (set RHYTHM_RESET_CONFIG=1 to reset it)."
+fi
 cp -R "$SOURCE_DIR/payload" "$BUNDLE_ROOT/"
 
 if [ -z "$STEPMANIA_APPLY_DEFAULT_CONTROLLER_MAP" ]; then
