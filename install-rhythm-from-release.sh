@@ -48,29 +48,57 @@ done
 [ -n "$tag" ] || die '--tag is required'
 [ -n "$repo" ] || die '--repo is required'
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rhythm-beta\.[0-9]+$ ]] || die 'tag must use vX.Y.Z-rhythm-beta.N'
+command -v python3 >/dev/null 2>&1 || die 'python3 is required'
 
 version="${tag#v}"
 bundles=(stepmania-flatpak-launcher itgmania-portable-launcher)
 
-validate_directory_ancestry() {
+create_retained_stage() {
   python3 - "$1" <<'PY'
+import errno
 import os
-import pathlib
-import stat
+import secrets
 import sys
 
-path = pathlib.Path(os.path.abspath(sys.argv[1]))
-current = pathlib.Path(path.anchor)
-for component in path.parts[1:]:
-    current /= component
-    try:
-        mode = os.lstat(current).st_mode
-    except FileNotFoundError:
+requested = os.path.abspath(sys.argv[1])
+parts = [part for part in requested.split(os.sep) if part]
+directory_fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    current = os.sep
+    for component in parts:
+        try:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=directory_fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(component, 0o700, dir_fd=directory_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=directory_fd)
+        os.close(directory_fd)
+        directory_fd = next_fd
+        current = os.path.join(current, component)
+
+    for _ in range(100):
+        stage_name = f".rhythm-stage.{secrets.token_hex(6)}"
+        try:
+            os.mkdir(stage_name, 0o700, dir_fd=directory_fd)
+        except FileExistsError:
+            continue
+        stage_fd = os.open(stage_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                           dir_fd=directory_fd)
+        os.close(stage_fd)
+        print(os.path.join(current, stage_name))
         break
-    if stat.S_ISLNK(mode):
-        raise SystemExit(f"refusing symlink in download directory ancestry: {current}")
-    if not stat.S_ISDIR(mode):
-        raise SystemExit(f"refusing non-directory in download directory ancestry: {current}")
+    else:
+        raise SystemExit("unable to choose a private release staging directory")
+except OSError as error:
+    if error.errno in (errno.ELOOP, errno.ENOTDIR):
+        raise SystemExit(f"unsafe download directory ancestry (symlink or non-directory): {requested}")
+    raise SystemExit(f"unable to create retained download directory: {error}")
+finally:
+    os.close(directory_fd)
 PY
 }
 
@@ -129,10 +157,11 @@ if [ -z "$download_dir" ]; then
 else
   retained_dir="$download_dir"
   cleanup_retained_dir=false
-  validate_directory_ancestry "$retained_dir" || die "unsafe download directory ancestry: $retained_dir"
-  mkdir -p "$retained_dir"
+  download_dir="$(create_retained_stage "$retained_dir")" || die 'unable to create private release staging directory'
 fi
-download_dir="$(mktemp -d "$retained_dir/.rhythm-stage.XXXXXX")" || die 'unable to create private release staging directory'
+if [ "$cleanup_retained_dir" = true ]; then
+  download_dir="$(mktemp -d "$retained_dir/.rhythm-stage.XXXXXX")" || die 'unable to create private release staging directory'
+fi
 cleanup() {
   if [ "$cleanup_retained_dir" = true ]; then
     rm -rf -- "$retained_dir"
@@ -148,7 +177,6 @@ else
 fi
 fetch_to_stage "$release_url" release.json || die 'unable to fetch release metadata'
 
-command -v python3 >/dev/null 2>&1 || die 'python3 is required'
 if [ "$dry_run" = false ]; then
   command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required'
   command -v tar >/dev/null 2>&1 || die 'tar is required'

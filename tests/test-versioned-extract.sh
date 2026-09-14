@@ -78,6 +78,17 @@ stage_count="$(find "$work_dir/downloads" -maxdepth 1 -type d -name '.rhythm-sta
 find "$work_dir/downloads" -type f -name 'stepmania-flatpak-launcher-0.1.0-rhythm-beta.1.tar.gz' | grep -q .
 find "$work_dir/downloads" -type f -name 'stepmania-flatpak-launcher-0.1.0-rhythm-beta.2.tar.gz' | grep -q .
 
+nested_downloads="$work_dir/missing/retained/downloads"
+INSTALL_ROOT="$work_dir/install" \
+  ASSET_SOURCE="$work_dir/assets" \
+  PATH="$work_dir/bin:$PATH" \
+  "$script_dir/install-rhythm-from-release.sh" \
+    --tag v0.1.0-rhythm-beta.1 \
+    --release-json "$work_dir/fixtures/0.1.0-rhythm-beta.1.json" \
+    --download-dir "$nested_downloads" >/dev/null
+[ -d "$nested_downloads" ]
+find "$nested_downloads" -type f -name 'itgmania-portable-launcher-0.1.0-rhythm-beta.1.tar.gz' | grep -q .
+
 outside_parent="$work_dir/outside-parent"
 mkdir -p "$outside_parent"
 ln -s "$outside_parent" "$work_dir/symlinked-download-parent"
