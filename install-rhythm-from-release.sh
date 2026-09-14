@@ -108,7 +108,12 @@ try:
     # Link the anonymous, still-open inode into this private stage.  link() is
     # no-replace: a raced destination makes the transfer fail rather than
     # following or overwriting another path.
-    os.link(f"/proc/self/fd/{file_fd}", os.path.join(directory, destination), follow_symlinks=True)
+    os.link(
+        f"/proc/self/fd/{file_fd}",
+        destination,
+        dst_dir_fd=directory_fd,
+        follow_symlinks=True,
+    )
 except Exception as error:
     raise SystemExit(f"unable to stage {destination}: {error}")
 finally:
