@@ -84,4 +84,44 @@ run_install 0.1.0-rhythm-beta.2
 [ ! -e "$new_extract/stale-from-previous-run.txt" ]
 [ -f "$old_extract/install.sh" ]
 
+outside="$work_dir/outside"
+mkdir -p "$outside"
+printf 'must-survive\n' > "$outside/sentinel.txt"
+rm -rf "$work_dir/downloads/extracted"
+mkdir -p "$work_dir/downloads/extracted"
+ln -s "$outside" "$work_dir/downloads/extracted/stepmania-flatpak-launcher"
+
+if run_install 0.1.0-rhythm-beta.2 > "$work_dir/symlink-output" 2>&1; then
+  echo "installer unexpectedly accepted symlinked extraction ancestry" >&2
+  exit 1
+fi
+[ "$(cat "$outside/sentinel.txt")" = 'must-survive' ]
+grep -Fq 'unsafe extraction ancestry' "$work_dir/symlink-output"
+
+outside_parent="$work_dir/outside-parent"
+mkdir -p "$outside_parent"
+ln -s "$outside_parent" "$work_dir/symlinked-download-parent"
+if INSTALL_ROOT="$work_dir/install" \
+  ASSET_SOURCE="$work_dir/assets" \
+  PATH="$work_dir/bin:$PATH" \
+  "$script_dir/install-rhythm-from-release.sh" \
+    --tag v0.1.0-rhythm-beta.2 \
+    --release-json "$work_dir/fixtures/0.1.0-rhythm-beta.2.json" \
+    --download-dir "$work_dir/symlinked-download-parent/downloads" > "$work_dir/parent-output" 2>&1; then
+  echo "installer unexpectedly accepted a symlinked download directory parent" >&2
+  exit 1
+fi
+grep -Fq 'unsafe download directory ancestry' "$work_dir/parent-output"
+
+release_sentinel="$work_dir/release-sentinel.txt"
+printf 'must-survive-release-metadata\n' > "$release_sentinel"
+rm -f "$work_dir/downloads/release.json"
+ln -s "$release_sentinel" "$work_dir/downloads/release.json"
+if run_install 0.1.0-rhythm-beta.2 > "$work_dir/metadata-output" 2>&1; then
+  echo "installer unexpectedly accepted a symlinked metadata destination" >&2
+  exit 1
+fi
+[ "$(cat "$release_sentinel")" = 'must-survive-release-metadata' ]
+grep -Fq 'unsafe release metadata destination' "$work_dir/metadata-output"
+
 echo "versioned extraction and retained downloads: ok"
