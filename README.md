@@ -7,17 +7,25 @@ firmware, or a custom Batocera image.
 
 ## Install the current beta
 
-Download `install-rhythm-from-release.sh` and its matching `.sha256` file from
-the latest GitHub prerelease. On the Batocera host:
+Download `install-rhythm-from-release.sh`,
+`rhythm_release_transaction.py`, and each matching `.sha256` file from the
+same GitHub prerelease. Keep all four files in one directory. On the Batocera
+host:
 
 ```bash
 sha256sum -c install-rhythm-from-release.sh.sha256
+sha256sum -c rhythm_release_transaction.py.sha256
 chmod +x install-rhythm-from-release.sh
-./install-rhythm-from-release.sh --tag v0.1.0-rhythm-beta.5
+./install-rhythm-from-release.sh --tag v<version>
 ```
 
-The installer downloads, verifies, and unpacks both launcher bundles before
+The checksum-verified shell entrypoint invokes the checksum-verified local
+transaction helper. It downloads, verifies, and unpacks both launcher bundles before
 it installs either one. Add `--dry-run` to inspect the release plan first.
+When `--download-dir` is supplied, the installer pins that directory and its
+private stage with Linux file descriptors for the entire metadata, download,
+checksum, extraction, and install transaction; it does not reopen the stage
+by its mutable pathname.
 
 ## What you provide
 

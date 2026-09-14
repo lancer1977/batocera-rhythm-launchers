@@ -25,12 +25,15 @@ Asset: ITGmania-1.3.0-Linux-no-songs.tar.gz
 
 ## Install
 
-Download `install-rhythm-from-release.sh` and its `.sha256` file from this
-same GitHub prerelease. Verify the installer before running it, then use the
-release tag shown on that prerelease:
+Download `install-rhythm-from-release.sh`,
+`rhythm_release_transaction.py`, and their `.sha256` files from this same
+GitHub prerelease. Keep all four files in one directory. Verify both program
+files before running the shell entrypoint, then use the release tag shown on
+that prerelease:
 
 ```bash
 sha256sum -c install-rhythm-from-release.sh.sha256
+sha256sum -c rhythm_release_transaction.py.sha256
 chmod +x install-rhythm-from-release.sh
 ./install-rhythm-from-release.sh --tag v<version>
 ```
