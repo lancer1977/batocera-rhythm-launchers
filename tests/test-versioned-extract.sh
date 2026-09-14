@@ -123,6 +123,7 @@ if run_install 0.1.0-rhythm-beta.2 > "$work_dir/metadata-output" 2>&1; then
 fi
 [ "$(cat "$release_sentinel")" = 'must-survive-release-metadata' ]
 grep -Fq 'unsafe release metadata destination' "$work_dir/metadata-output"
+rm -f "$work_dir/downloads/release.json"
 
 archive_sentinel="$work_dir/archive-sentinel.txt"
 printf 'must-survive-archive\n' > "$archive_sentinel"
