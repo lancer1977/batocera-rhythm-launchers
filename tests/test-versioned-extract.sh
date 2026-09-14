@@ -124,4 +124,27 @@ fi
 [ "$(cat "$release_sentinel")" = 'must-survive-release-metadata' ]
 grep -Fq 'unsafe release metadata destination' "$work_dir/metadata-output"
 
+archive_sentinel="$work_dir/archive-sentinel.txt"
+printf 'must-survive-archive\n' > "$archive_sentinel"
+rm -f "$work_dir/downloads/stepmania-flatpak-launcher-0.1.0-rhythm-beta.2.tar.gz"
+ln -s "$archive_sentinel" "$work_dir/downloads/stepmania-flatpak-launcher-0.1.0-rhythm-beta.2.tar.gz"
+if run_install 0.1.0-rhythm-beta.2 > "$work_dir/archive-output" 2>&1; then
+  echo "installer unexpectedly accepted a symlinked archive destination" >&2
+  exit 1
+fi
+[ "$(cat "$archive_sentinel")" = 'must-survive-archive' ]
+grep -Fq 'unsafe archive destination' "$work_dir/archive-output"
+
+rm -f "$work_dir/downloads/stepmania-flatpak-launcher-0.1.0-rhythm-beta.2.tar.gz"
+checksum_sentinel="$work_dir/checksum-sentinel.txt"
+printf 'must-survive-checksum\n' > "$checksum_sentinel"
+rm -f "$work_dir/downloads/stepmania-flatpak-launcher-0.1.0-rhythm-beta.2.tar.gz.sha256"
+ln -s "$checksum_sentinel" "$work_dir/downloads/stepmania-flatpak-launcher-0.1.0-rhythm-beta.2.tar.gz.sha256"
+if run_install 0.1.0-rhythm-beta.2 > "$work_dir/checksum-output" 2>&1; then
+  echo "installer unexpectedly accepted a symlinked checksum destination" >&2
+  exit 1
+fi
+[ "$(cat "$checksum_sentinel")" = 'must-survive-checksum' ]
+grep -Fq 'unsafe checksum destination' "$work_dir/checksum-output"
+
 echo "versioned extraction and retained downloads: ok"

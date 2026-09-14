@@ -92,6 +92,55 @@ if not stat.S_ISREG(mode):
 PY
 }
 
+replace_download() {
+  local temporary_path="$1"
+  local destination_name="$2"
+  python3 - "$download_dir" "$(basename "$temporary_path")" "$destination_name" <<'PY'
+import os
+import stat
+import sys
+
+directory, temporary_name, destination_name = sys.argv[1:]
+flags = os.O_RDONLY
+flags |= getattr(os, "O_DIRECTORY", 0)
+flags |= getattr(os, "O_NOFOLLOW", 0)
+directory_fd = os.open(directory, flags)
+try:
+    try:
+        mode = os.stat(destination_name, dir_fd=directory_fd, follow_symlinks=False).st_mode
+    except FileNotFoundError:
+        mode = None
+    if mode is not None and not stat.S_ISREG(mode):
+        raise SystemExit(f"refusing non-regular download destination: {directory}/{destination_name}")
+    # Both names are resolved relative to the same directory descriptor.  The
+    # destination is replaced, never followed, if a local actor swaps it for a
+    # symlink after the preflight check.
+    os.replace(
+        temporary_name,
+        destination_name,
+        src_dir_fd=directory_fd,
+        dst_dir_fd=directory_fd,
+    )
+finally:
+    os.close(directory_fd)
+PY
+}
+
+download_asset() {
+  local url="$1"
+  local destination_name="$2"
+  local temporary_path
+  temporary_path="$(mktemp "$download_dir/.rhythm-download.XXXXXX")" || die "unable to create temporary download for $destination_name"
+  if ! curl --fail --silent --show-error --location "$url" -o "$temporary_path"; then
+    rm -f -- "$temporary_path"
+    die "unable to download $destination_name"
+  fi
+  if ! replace_download "$temporary_path" "$destination_name"; then
+    rm -f -- "$temporary_path"
+    die "unsafe download destination: $destination_name"
+  fi
+}
+
 if [ -z "$download_dir" ]; then
   download_dir="$(mktemp -d)"
   cleanup_download_dir=true
@@ -215,8 +264,8 @@ for bundle in "${bundles[@]}"; do
     continue
   fi
 
-  curl --fail --silent --show-error --location "$archive_url" -o "$download_dir/$archive"
-  curl --fail --silent --show-error --location "$checksum_url" -o "$download_dir/$checksum"
+  download_asset "$archive_url" "$archive"
+  download_asset "$checksum_url" "$checksum"
   (
     cd "$download_dir"
     sha256sum -c "$checksum"
