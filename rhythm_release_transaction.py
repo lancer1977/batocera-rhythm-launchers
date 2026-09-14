@@ -98,6 +98,7 @@ def open_directory_walk(path: str) -> tuple[int, str]:
             os.close(current_fd)
             current_fd = next_fd
             current_path = os.path.join(current_path, component)
+            ensure_private_ancestry(current_fd, current_path)
         return current_fd, current_path
     except OSError as error:
         os.close(current_fd)
@@ -106,6 +107,18 @@ def open_directory_walk(path: str) -> tuple[int, str]:
                 f"unsafe download directory ancestry (symlink or non-directory): {requested}"
             ) from error
         raise RuntimeError(f"unable to create retained download directory: {error}") from error
+
+
+def ensure_private_ancestry(directory_fd: int, path: str) -> None:
+    """Reject retained roots that another unprivileged account can mutate."""
+
+    details = os.fstat(directory_fd)
+    writable_by_others = details.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    trusted_sticky_root = details.st_mode & stat.S_ISVTX and details.st_uid == 0
+    if writable_by_others and not trusted_sticky_root:
+        raise RuntimeError(
+            "unsafe download directory ancestry (group/world writable): " + path
+        )
 
 
 def create_stage(root_fd: int, root_path: str) -> tuple[int, str]:
