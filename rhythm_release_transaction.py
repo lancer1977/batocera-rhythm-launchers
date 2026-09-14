@@ -387,6 +387,10 @@ def run(args: argparse.Namespace) -> None:
             if temporary_root:
                 try:
                     remove_tree_fd(stage_fd)
+                    # The private stage is a direct child of the temporary
+                    # root.  Remove its directory entry via the root handle
+                    # before attempting to remove the root itself.
+                    os.rmdir(os.path.basename(stage_path), dir_fd=root_fd)
                 except OSError:
                     pass
             os.close(stage_fd)

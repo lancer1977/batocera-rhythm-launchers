@@ -73,6 +73,18 @@ run_install() {
 run_install 0.1.0-rhythm-beta.1
 run_install 0.1.0-rhythm-beta.2
 
+# Omitted --download-dir uses a private temporary root and leaves no staging
+# directory behind after the descriptor-pinned transaction completes.
+mkdir -p "$work_dir/tmp"
+INSTALL_ROOT="$work_dir/install" \
+  ASSET_SOURCE="$work_dir/assets" \
+  TMPDIR="$work_dir/tmp" \
+  PATH="$work_dir/bin:$PATH" \
+  "$script_dir/install-rhythm-from-release.sh" \
+    --tag v0.1.0-rhythm-beta.1 \
+    --release-json "$work_dir/fixtures/0.1.0-rhythm-beta.1.json" >/dev/null
+[ -z "$(find "$work_dir/tmp" -maxdepth 1 -type d -name 'rhythm-release-*' -print -quit)" ]
+
 stage_count="$(find "$work_dir/downloads" -maxdepth 1 -type d -name '.rhythm-stage.*' | wc -l)"
 [ "$stage_count" -eq 2 ]
 find "$work_dir/downloads" -type f -name 'stepmania-flatpak-launcher-0.1.0-rhythm-beta.1.tar.gz' | grep -q .
