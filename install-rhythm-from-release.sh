@@ -60,7 +60,9 @@ else
   mkdir -p "$download_dir"
 fi
 cleanup() {
-  [ "$cleanup_download_dir" = true ] && rm -rf "$download_dir"
+  if [ "$cleanup_download_dir" = true ]; then
+    rm -rf -- "$download_dir"
+  fi
 }
 trap cleanup EXIT
 
@@ -148,7 +150,13 @@ for bundle in "${bundles[@]}"; do
     sha256sum -c "$checksum"
   )
   validate_bundle_archive "$download_dir/$archive"
-  extract_dir="$download_dir/$bundle"
+  # Keep extracted files isolated by release. A retained download directory can
+  # contain multiple releases, and extracting over a prior directory would
+  # leave files that no longer exist in the current archive.
+  extract_dir="$download_dir/extracted/$bundle/$version"
+  # Only remove this exact release's staging directory. Archives and extracted
+  # files for other releases remain available in a retained download dir.
+  rm -rf -- "$extract_dir"
   mkdir -p "$extract_dir"
   tar -xzf "$download_dir/$archive" -C "$extract_dir"
   [ -x "$extract_dir/install.sh" ] || die "$archive does not contain an executable install.sh"
@@ -156,7 +164,7 @@ done
 
 if [ "$dry_run" = false ]; then
   for bundle in "${bundles[@]}"; do
-    extract_dir="$download_dir/$bundle"
+    extract_dir="$download_dir/extracted/$bundle/$version"
     (
       cd "$extract_dir"
       ./install.sh

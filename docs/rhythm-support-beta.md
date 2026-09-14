@@ -40,6 +40,11 @@ verifies them before extraction, and runs their local `install.sh` files. It
 does not install either engine or any songs. To inspect without writing,
 append `--dry-run`. To retain the verified downloads, append
 `--download-dir /userdata/system/backups/rhythm-beta-downloads`.
+When a download directory is retained, downloaded archives and checksums stay
+at its top level, while each release is extracted under
+`extracted/<bundle>/<version>/`. This keeps older retained releases available
+and prevents files from a previous extraction from being mixed into a newer
+release.
 
 Confirm the StepMania Flatpak is installed, then launch **StepMania** from
 Batocera **Ports**. Do not use the direct service command for gameplay: the
