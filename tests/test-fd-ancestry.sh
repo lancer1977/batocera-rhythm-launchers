@@ -53,6 +53,31 @@ try:
     finally:
         os.close(stage_fd)
         os.close(root_fd)
+
+    # A stage pathname replacement in the mkdir-to-open window must not be
+    # accepted as the private directory created by this transaction.
+    root_fd, root_path = transaction.open_directory_walk(str(root / "replacement-check"))
+    original_open = transaction.os.open
+    replacement = {"done": False}
+
+    def replace_stage_then_open(name, flags, *args, **kwargs):
+        if not replacement["done"] and name.startswith(".rhythm-stage.") and kwargs.get("dir_fd") == root_fd:
+            replacement["done"] = True
+            os.rename(name, name + ".original", src_dir_fd=root_fd, dst_dir_fd=root_fd)
+            os.mkdir(name, 0o700, dir_fd=root_fd)
+        return original_open(name, flags, *args, **kwargs)
+
+    transaction.os.open = replace_stage_then_open
+    try:
+        try:
+            transaction.create_stage(root_fd, root_path)
+        except RuntimeError as error:
+            assert "replaced during creation" in str(error)
+        else:
+            raise AssertionError("create_stage accepted a replaced directory")
+    finally:
+        transaction.os.open = original_open
+        os.close(root_fd)
 finally:
     shutil.rmtree(root)
 print("descriptor-pinned stage and extraction ancestry: ok")
