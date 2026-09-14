@@ -25,3 +25,9 @@ waits for ITGmania to exit, then stops it and briefly holds the Ports process
 open. This lets Batocera hand controller focus to the game; starting the
 service directly is for diagnostics only and leaves EmulationStation input
 active.
+
+Re-running `install.sh` for a beta upgrade preserves an existing
+`/userdata/system/share/itgmania-portable-launcher/config.env`, including
+host-specific artifact and runtime paths. To deliberately replace it with the
+bundle defaults, run the installer with `RHYTHM_RESET_CONFIG=1`; this is an
+explicit reset and should be followed by reviewing the resulting file.
