@@ -18,6 +18,10 @@ chmod +x install-rhythm-from-release.sh
 
 The installer downloads, verifies, and unpacks both launcher bundles before
 it installs either one. Add `--dry-run` to inspect the release plan first.
+When `--download-dir` is supplied, the installer pins that directory and its
+private stage with Linux file descriptors for the entire metadata, download,
+checksum, extraction, and install transaction; it does not reopen the stage
+by its mutable pathname.
 
 ## What you provide
 

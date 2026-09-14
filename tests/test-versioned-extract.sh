@@ -110,4 +110,35 @@ ln -s "$archive_sentinel" "$work_dir/downloads/stepmania-flatpak-launcher-0.1.0-
 run_install 0.1.0-rhythm-beta.2
 [ "$(cat "$archive_sentinel")" = 'must-survive-archive' ]
 
+# Keep using the opened stage after its visible pathname is renamed and
+# replaced with a symlink (a concurrent retained-directory pathname race).
+stage_marker="$work_dir/stage-ready"
+stage_output="$work_dir/stage-race-output"
+RHYTHM_TEST_STAGE_READY="$stage_marker" \
+  INSTALL_ROOT="$work_dir/install" \
+  ASSET_SOURCE="$work_dir/assets" \
+  PATH="$work_dir/bin:$PATH" \
+  "$script_dir/install-rhythm-from-release.sh" \
+    --tag v0.1.0-rhythm-beta.1 \
+    --release-json "$work_dir/fixtures/0.1.0-rhythm-beta.1.json" \
+    --download-dir "$work_dir/downloads" > "$stage_output" 2>&1 &
+stage_pid=$!
+for _ in $(seq 1 200); do
+  [ -f "$stage_marker" ] && break
+  sleep 0.01
+done
+[ -f "$stage_marker" ]
+stage_path="$(head -n 1 "$stage_marker")"
+mv "$stage_path" "$stage_path.renamed"
+ln -s "$outside_parent" "$stage_path"
+touch "$stage_marker.continue"
+wait "$stage_pid"
+grep -Fq 'Installed verified Rhythm Support Beta' "$stage_output"
+find "$stage_path.renamed" -type f -name 'stepmania-flatpak-launcher-0.1.0-rhythm-beta.1.tar.gz' | grep -q .
+
+if [ ! -L "$stage_path" ]; then
+  echo "stage race fixture was not left as the replacement symlink" >&2
+  exit 1
+fi
+
 echo "private staging and retained downloads: ok"
