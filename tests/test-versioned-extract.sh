@@ -84,4 +84,18 @@ run_install 0.1.0-rhythm-beta.2
 [ ! -e "$new_extract/stale-from-previous-run.txt" ]
 [ -f "$old_extract/install.sh" ]
 
+outside="$work_dir/outside"
+mkdir -p "$outside"
+printf 'must-survive\n' > "$outside/sentinel.txt"
+rm -rf "$work_dir/downloads/extracted"
+mkdir -p "$work_dir/downloads/extracted"
+ln -s "$outside" "$work_dir/downloads/extracted/stepmania-flatpak-launcher"
+
+if run_install 0.1.0-rhythm-beta.2 > "$work_dir/symlink-output" 2>&1; then
+  echo "installer unexpectedly accepted symlinked extraction ancestry" >&2
+  exit 1
+fi
+[ "$(cat "$outside/sentinel.txt")" = 'must-survive' ]
+grep -Fq 'unsafe extraction ancestry' "$work_dir/symlink-output"
+
 echo "versioned extraction and retained downloads: ok"

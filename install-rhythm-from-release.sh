@@ -131,6 +131,34 @@ except (OSError, tarfile.TarError) as error:
 PY
 }
 
+validate_extraction_ancestry() {
+  local extraction_dir="$1"
+  python3 - "$download_dir" "$extraction_dir" <<'PY'
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(os.path.abspath(sys.argv[1]))
+target = pathlib.Path(os.path.abspath(sys.argv[2]))
+try:
+    relative = target.relative_to(root)
+except ValueError:
+    raise SystemExit("extraction directory is outside the download directory")
+
+current = root
+paths = [current]
+for component in relative.parts:
+    current /= component
+    paths.append(current)
+
+for path in paths:
+    if path.is_symlink():
+        raise SystemExit(f"refusing symlink in extraction ancestry: {path}")
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f"refusing non-directory in extraction ancestry: {path}")
+PY
+}
+
 for bundle in "${bundles[@]}"; do
   archive="${bundle}-${version}.tar.gz"
   checksum="${archive}.sha256"
@@ -156,6 +184,7 @@ for bundle in "${bundles[@]}"; do
   extract_dir="$download_dir/extracted/$bundle/$version"
   # Only remove this exact release's staging directory. Archives and extracted
   # files for other releases remain available in a retained download dir.
+  validate_extraction_ancestry "$extract_dir" || die "unsafe extraction ancestry for $extract_dir"
   rm -rf -- "$extract_dir"
   mkdir -p "$extract_dir"
   tar -xzf "$download_dir/$archive" -C "$extract_dir"
