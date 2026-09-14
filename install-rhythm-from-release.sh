@@ -142,16 +142,18 @@ download_asset() {
 }
 
 if [ -z "$download_dir" ]; then
-  download_dir="$(mktemp -d)"
-  cleanup_download_dir=true
+  retained_dir="$(mktemp -d)"
+  cleanup_retained_dir=true
 else
-  cleanup_download_dir=false
-  validate_directory_ancestry "$download_dir" || die "unsafe download directory ancestry: $download_dir"
-  mkdir -p "$download_dir"
+  retained_dir="$download_dir"
+  cleanup_retained_dir=false
+  validate_directory_ancestry "$retained_dir" || die "unsafe download directory ancestry: $retained_dir"
+  mkdir -p "$retained_dir"
 fi
+download_dir="$(mktemp -d "$retained_dir/.rhythm-stage.XXXXXX")" || die 'unable to create private release staging directory'
 cleanup() {
-  if [ "$cleanup_download_dir" = true ]; then
-    rm -rf -- "$download_dir"
+  if [ "$cleanup_retained_dir" = true ]; then
+    rm -rf -- "$retained_dir"
   fi
 }
 trap cleanup EXIT
@@ -271,14 +273,7 @@ for bundle in "${bundles[@]}"; do
     sha256sum -c "$checksum"
   )
   validate_bundle_archive "$download_dir/$archive"
-  # Keep extracted files isolated by release. A retained download directory can
-  # contain multiple releases, and extracting over a prior directory would
-  # leave files that no longer exist in the current archive.
-  extract_dir="$download_dir/extracted/$bundle/$version"
-  # Only remove this exact release's staging directory. Archives and extracted
-  # files for other releases remain available in a retained download dir.
-  validate_extraction_ancestry "$extract_dir" || die "unsafe extraction ancestry for $extract_dir"
-  rm -rf -- "$extract_dir"
+  extract_dir="$download_dir/extracted/$bundle"
   mkdir -p "$extract_dir"
   tar -xzf "$download_dir/$archive" -C "$extract_dir"
   [ -x "$extract_dir/install.sh" ] || die "$archive does not contain an executable install.sh"
@@ -286,7 +281,7 @@ done
 
 if [ "$dry_run" = false ]; then
   for bundle in "${bundles[@]}"; do
-    extract_dir="$download_dir/extracted/$bundle/$version"
+    extract_dir="$download_dir/extracted/$bundle"
     (
       cd "$extract_dir"
       ./install.sh
