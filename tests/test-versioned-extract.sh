@@ -39,7 +39,7 @@ for version in ("0.1.0-rhythm-beta.1", "0.1.0-rhythm-beta.2"):
         for name in (archive_name, checksum_name):
             release_assets.append({
                 "name": name,
-                "browser_download_url": f"https://assets.invalid/{name}",
+                "browser_download_url": f"file://{assets / name}",
             })
     (fixtures / f"{version}.json").write_text(json.dumps({"assets": release_assets}), encoding="utf-8")
 PY

@@ -74,71 +74,48 @@ for component in path.parts[1:]:
 PY
 }
 
-validate_regular_destination() {
-  python3 - "$1" <<'PY'
-import os
-import stat
-import sys
-
-path = sys.argv[1]
-try:
-    mode = os.lstat(path).st_mode
-except FileNotFoundError:
-    raise SystemExit(0)
-if stat.S_ISLNK(mode):
-    raise SystemExit(f"refusing symlinked download destination: {path}")
-if not stat.S_ISREG(mode):
-    raise SystemExit(f"refusing non-regular download destination: {path}")
-PY
-}
-
-replace_download() {
-  local temporary_path="$1"
-  local destination_name="$2"
-  python3 - "$download_dir" "$(basename "$temporary_path")" "$destination_name" <<'PY'
-import os
-import stat
-import sys
-
-directory, temporary_name, destination_name = sys.argv[1:]
-flags = os.O_RDONLY
-flags |= getattr(os, "O_DIRECTORY", 0)
-flags |= getattr(os, "O_NOFOLLOW", 0)
-directory_fd = os.open(directory, flags)
-try:
-    try:
-        mode = os.stat(destination_name, dir_fd=directory_fd, follow_symlinks=False).st_mode
-    except FileNotFoundError:
-        mode = None
-    if mode is not None and not stat.S_ISREG(mode):
-        raise SystemExit(f"refusing non-regular download destination: {directory}/{destination_name}")
-    # Both names are resolved relative to the same directory descriptor.  The
-    # destination is replaced, never followed, if a local actor swaps it for a
-    # symlink after the preflight check.
-    os.replace(
-        temporary_name,
-        destination_name,
-        src_dir_fd=directory_fd,
-        dst_dir_fd=directory_fd,
-    )
-finally:
-    os.close(directory_fd)
-PY
-}
-
-download_asset() {
+fetch_to_stage() {
   local url="$1"
   local destination_name="$2"
-  local temporary_path
-  temporary_path="$(mktemp "$download_dir/.rhythm-download.XXXXXX")" || die "unable to create temporary download for $destination_name"
-  if ! curl --fail --silent --show-error --location "$url" -o "$temporary_path"; then
-    rm -f -- "$temporary_path"
-    die "unable to download $destination_name"
-  fi
-  if ! replace_download "$temporary_path" "$destination_name"; then
-    rm -f -- "$temporary_path"
-    die "unsafe download destination: $destination_name"
-  fi
+  python3 - "$download_dir" "$url" "$destination_name" <<'PY'
+import os
+import sys
+import urllib.request
+
+directory, url, destination = sys.argv[1:]
+directory_fd = os.open(
+    directory,
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+)
+file_fd = None
+try:
+    file_fd = os.open(
+        ".",
+        os.O_WRONLY | os.O_TMPFILE,
+        0o600,
+        dir_fd=directory_fd,
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "rhythm-support-installer"},
+    )
+    with urllib.request.urlopen(request) as response:
+        while chunk := response.read(1024 * 1024):
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(file_fd, view):]
+    os.fsync(file_fd)
+    # Link the anonymous, still-open inode into this private stage.  link() is
+    # no-replace: a raced destination makes the transfer fail rather than
+    # following or overwriting another path.
+    os.link(f"/proc/self/fd/{file_fd}", os.path.join(directory, destination), follow_symlinks=True)
+except Exception as error:
+    raise SystemExit(f"unable to stage {destination}: {error}")
+finally:
+    if file_fd is not None:
+        os.close(file_fd)
+    os.close(directory_fd)
+PY
 }
 
 if [ -z "$download_dir" ]; then
@@ -159,20 +136,15 @@ cleanup() {
 trap cleanup EXIT
 
 release_metadata="$download_dir/release.json"
-validate_regular_destination "$release_metadata" || die "unsafe release metadata destination: $release_metadata"
 if [ -n "$release_json" ]; then
-  cp "$release_json" "$release_metadata"
+  release_url="file://$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve())' "$release_json")"
 else
-  command -v curl >/dev/null 2>&1 || die 'curl is required'
-  curl --fail --silent --show-error --location \
-    -H 'Accept: application/vnd.github+json' \
-    -H 'User-Agent: rhythm-support-installer' \
-    "https://api.github.com/repos/$repo/releases/tags/$tag" > "$release_metadata"
+  release_url="https://api.github.com/repos/$repo/releases/tags/$tag"
 fi
+fetch_to_stage "$release_url" release.json || die 'unable to fetch release metadata'
 
 command -v python3 >/dev/null 2>&1 || die 'python3 is required'
 if [ "$dry_run" = false ]; then
-  command -v curl >/dev/null 2>&1 || die 'curl is required'
   command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required'
   command -v tar >/dev/null 2>&1 || die 'tar is required'
 fi
@@ -257,17 +229,17 @@ for bundle in "${bundles[@]}"; do
   checksum="${archive}.sha256"
   archive_url="$(asset_url "$archive")" || die "release $tag is missing $archive"
   checksum_url="$(asset_url "$checksum")" || die "release $tag is missing $checksum"
-  [[ "$archive_url" == https://* && "$checksum_url" == https://* ]] || die 'release asset URL must use HTTPS'
-  validate_regular_destination "$download_dir/$archive" || die "unsafe archive destination: $archive"
-  validate_regular_destination "$download_dir/$checksum" || die "unsafe checksum destination: $checksum"
+  if [ -z "$release_json" ]; then
+    [[ "$archive_url" == https://* && "$checksum_url" == https://* ]] || die 'release asset URL must use HTTPS'
+  fi
   printf 'Verified install plan: %s\n' "$archive"
   if [ "$dry_run" = true ]; then
     printf '  archive: %s\n  checksum: %s\n' "$archive_url" "$checksum_url"
     continue
   fi
 
-  download_asset "$archive_url" "$archive"
-  download_asset "$checksum_url" "$checksum"
+  fetch_to_stage "$archive_url" "$archive" || die "unable to download $archive"
+  fetch_to_stage "$checksum_url" "$checksum" || die "unable to download $checksum"
   (
     cd "$download_dir"
     sha256sum -c "$checksum"
