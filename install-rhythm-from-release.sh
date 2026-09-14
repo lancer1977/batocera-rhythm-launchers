@@ -52,11 +52,52 @@ done
 version="${tag#v}"
 bundles=(stepmania-flatpak-launcher itgmania-portable-launcher)
 
+validate_directory_ancestry() {
+  python3 - "$1" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(os.path.abspath(sys.argv[1]))
+current = pathlib.Path(path.anchor)
+for component in path.parts[1:]:
+    current /= component
+    try:
+        mode = os.lstat(current).st_mode
+    except FileNotFoundError:
+        break
+    if stat.S_ISLNK(mode):
+        raise SystemExit(f"refusing symlink in download directory ancestry: {current}")
+    if not stat.S_ISDIR(mode):
+        raise SystemExit(f"refusing non-directory in download directory ancestry: {current}")
+PY
+}
+
+validate_regular_destination() {
+  python3 - "$1" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    mode = os.lstat(path).st_mode
+except FileNotFoundError:
+    raise SystemExit(0)
+if stat.S_ISLNK(mode):
+    raise SystemExit(f"refusing symlinked download destination: {path}")
+if not stat.S_ISREG(mode):
+    raise SystemExit(f"refusing non-regular download destination: {path}")
+PY
+}
+
 if [ -z "$download_dir" ]; then
   download_dir="$(mktemp -d)"
   cleanup_download_dir=true
 else
   cleanup_download_dir=false
+  validate_directory_ancestry "$download_dir" || die "unsafe download directory ancestry: $download_dir"
   mkdir -p "$download_dir"
 fi
 cleanup() {
@@ -67,6 +108,7 @@ cleanup() {
 trap cleanup EXIT
 
 release_metadata="$download_dir/release.json"
+validate_regular_destination "$release_metadata" || die "unsafe release metadata destination: $release_metadata"
 if [ -n "$release_json" ]; then
   cp "$release_json" "$release_metadata"
 else
@@ -165,6 +207,8 @@ for bundle in "${bundles[@]}"; do
   archive_url="$(asset_url "$archive")" || die "release $tag is missing $archive"
   checksum_url="$(asset_url "$checksum")" || die "release $tag is missing $checksum"
   [[ "$archive_url" == https://* && "$checksum_url" == https://* ]] || die 'release asset URL must use HTTPS'
+  validate_regular_destination "$download_dir/$archive" || die "unsafe archive destination: $archive"
+  validate_regular_destination "$download_dir/$checksum" || die "unsafe checksum destination: $checksum"
   printf 'Verified install plan: %s\n' "$archive"
   if [ "$dry_run" = true ]; then
     printf '  archive: %s\n  checksum: %s\n' "$archive_url" "$checksum_url"
