@@ -114,10 +114,12 @@ def ensure_private_ancestry(directory_fd: int, path: str) -> None:
 
     details = os.fstat(directory_fd)
     writable_by_others = details.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    trusted_owner = details.st_uid in (0, os.geteuid())
     trusted_sticky_root = details.st_mode & stat.S_ISVTX and details.st_uid == 0
-    if writable_by_others and not trusted_sticky_root:
+    if not trusted_owner or (writable_by_others and not trusted_sticky_root):
         raise RuntimeError(
-            "unsafe download directory ancestry (group/world writable): " + path
+            "unsafe download directory ancestry (untrusted owner or group/world writable): "
+            + path
         )
 
 
