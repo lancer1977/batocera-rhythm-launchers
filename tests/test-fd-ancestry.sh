@@ -8,8 +8,10 @@ import io
 import os
 import pathlib
 import shutil
+import stat
 import tarfile
 import tempfile
+import types
 
 script_dir = pathlib.Path(os.sys.argv[1])
 spec = importlib.util.spec_from_file_location("transaction", script_dir / "rhythm_release_transaction.py")
@@ -78,6 +80,25 @@ try:
     finally:
         transaction.os.open = original_open
         os.close(root_fd)
+
+    # A retained ancestor owned by another non-root account is not safe for a
+    # root-run installer even if its mode is 0755: that owner can replace
+    # entries below it. Exercise the ownership gate without requiring another
+    # local account in the test environment.
+    original_fstat = transaction.os.fstat
+    transaction.os.fstat = lambda _fd: types.SimpleNamespace(
+        st_uid=os.geteuid() + 1,
+        st_mode=stat.S_IFDIR | 0o755,
+    )
+    try:
+        try:
+            transaction.ensure_private_ancestry(0, "/untrusted")
+        except RuntimeError as error:
+            assert "untrusted owner" in str(error)
+        else:
+            raise AssertionError("accepted retained ancestry owned by another account")
+    finally:
+        transaction.os.fstat = original_fstat
 finally:
     shutil.rmtree(root)
 print("descriptor-pinned stage and extraction ancestry: ok")
