@@ -37,8 +37,9 @@ chmod +x install-rhythm-from-release.sh
 
 The installer downloads the two launcher bundles and their release checksums,
 verifies them before extraction, and runs their local `install.sh` files. It
-does not install either engine or any songs. To inspect without writing,
-append `--dry-run`. To retain the verified downloads, append
+does not install either engine or any songs. To inspect without retaining
+release assets or changing launchers, append `--dry-run`. To retain the
+verified downloads, append
 `--download-dir /userdata/system/backups/rhythm-beta-downloads`.
 When a download directory is retained, each invocation creates a private
 `.rhythm-stage.*` directory beneath it. The metadata, archives, checksums, and

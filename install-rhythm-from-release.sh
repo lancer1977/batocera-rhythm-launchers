@@ -262,6 +262,9 @@ if [ "$dry_run" = false ]; then
 fi
 
 if [ "$dry_run" = true ]; then
+  if [ "$cleanup_retained_dir" = false ]; then
+    rm -rf -- "$download_dir"
+  fi
   printf 'DRY-RUN: no release assets were downloaded or installed.\n'
 else
   printf 'Installed verified Rhythm Support Beta %s launcher bundles.\n' "$version"
