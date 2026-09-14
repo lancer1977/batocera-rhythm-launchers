@@ -1,0 +1,31 @@
+# Non-secret defaults for the StepMania Flatpak launcher bundle.
+
+SERVICE_NAME=stepmania-flatpak-launcher
+FLATPAK_APP_ID=com.stepmania.StepMania
+STEPMANIA_DATA_ROOT=/userdata/system/share/stepmania-flatpak-launcher
+STEPMANIA_SONGS_DIR=/userdata/system/share/stepmania-flatpak-launcher/Songs
+STEPMANIA_EXTRA_ARGS=
+LOGDIR=/userdata/system/logs
+PIDFILE=/var/run/stepmania-flatpak-launcher.pid
+STEPMANIA_PIPELINE_INITIAL_SCREEN=ScreenPolyhydraPipeline
+STEPMANIA_PIPELINE_SCREEN_CLASS=ScreenWithMenuElements
+STEPMANIA_PIPELINE_SCREEN_FALLBACK=ScreenWithMenuElementsBlank
+STEPMANIA_PIPELINE_SCREEN=
+STEPMANIA_PIPELINE_SONG=
+STEPMANIA_PIPELINE_SONG_DIR=
+STEPMANIA_PIPELINE_DIFFICULTY=
+STEPMANIA_PIPELINE_AUTOPLAY=
+STEPMANIA_PIPELINE_EMIT_SONG_CATALOG=
+STEPMANIA_PIPELINE_CATALOG_LIMIT=
+STEPMANIA_PIPELINE_EVENT_DIR=
+STEPMANIA_APPLY_DEFAULT_CONTROLLER_MAP=1
+STEPMANIA_FLATPAK_HOME=/userdata/saves/flatpak/data
+STEPMANIA_KEYMAPS_PATH=/userdata/saves/flatpak/data/.var/app/com.stepmania.StepMania/.stepmania-5.1/Save/Keymaps.ini
+
+# Override these only if the target display/session needs explicit values.
+DISPLAY=:0
+# Batocera does not create /run/user/0 for its root-owned game session.
+XDG_RUNTIME_DIR=/var/run
+# Leave blank on a standard Batocera X session; the service discovers X's
+# per-boot `-auth` cookie. Set this only for a non-standard display session.
+XAUTHORITY=

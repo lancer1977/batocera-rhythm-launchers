@@ -1,0 +1,15 @@
+# Stock ITGmania v1.3.0 portable launcher. Do not change the profile value.
+SERVICE_NAME=itgmania-portable-launcher
+ITGMANIA_RELEASE_VERSION=1.3.0
+ITGMANIA_ARTIFACT_PATH=/userdata/system/share/itgmania-portable-launcher/artifacts/ITGmania-1.3.0-Linux-no-songs.tar.gz
+ITGMANIA_ARTIFACT_SHA256=0f106842a3a1fb9adb6d23df27557b60b9d4be23d661f2b5b2ed477eb63a7c09
+ITGMANIA_RUNTIME_ROOT=/userdata/system/share/itgmania-portable-launcher/runtime/itgmania
+ITGMANIA_EXECUTABLE=/userdata/system/share/itgmania-portable-launcher/runtime/itgmania/itgmania
+ITGMANIA_SONGS_DIR=/userdata/system/share/itgmania-portable-launcher/Songs
+ITGMANIA_LOG_DIR=/userdata/system/logs
+ITGMANIA_PIDFILE=/var/run/itgmania-portable-launcher.pid
+SIDECAR_CAPABILITY_PROFILE=itgmania-theme-lua
+SIDECAR_EVENT_DIR=/userdata/system/share/itgmania-portable-launcher/events
+DISPLAY=:0
+XDG_RUNTIME_DIR=/var/run
+XAUTHORITY=
