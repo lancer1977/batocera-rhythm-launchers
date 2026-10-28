@@ -179,7 +179,7 @@ def preview(args: argparse.Namespace) -> dict:
                 if not asset.get("sha256") or actual != asset["sha256"]:
                     blockers.append("source-hash-mismatch")
                     continue
-                destination = PurePosixPath(rel).relative_to(PurePosixPath(loc))
+                destination = PurePosixPath(rel)
                 dest_rel = str(destination)
                 previous = destinations.get(dest_rel)
                 if previous is not None and previous != actual:
@@ -234,7 +234,7 @@ def preview(args: argparse.Namespace) -> dict:
                     if not asset.get("sha256") or actual != asset["sha256"]:
                         blockers.append("source-hash-mismatch")
                         continue
-                    destination = PurePosixPath(songloc).relative_to(PurePosixPath(loc)) / PurePosixPath(rel).relative_to(PurePosixPath(songloc))
+                    destination = PurePosixPath(rel)
                     dest_rel = str(destination)
                     collision_key = dest_rel
                     previous = destinations.get(collision_key)
@@ -344,10 +344,19 @@ def main() -> int:
     rendered = json.dumps(plan, indent=2, sort_keys=True) + "\n"
     if args.output:
         output = Path(args.output).absolute()
-        if output.exists() and output.is_dir():
-            parser.error("--output must name a metadata file")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(rendered, encoding="utf-8")
+        resolved = output.resolve(strict=False)
+        protected = [Path(args.source).resolve(), Path(args.target).resolve()]
+        if any(within(root, resolved) for root in protected):
+            parser.error("--output must be outside source and target trees")
+        if has_symlink_component(output) or output.exists():
+            parser.error("--output must be a new non-symlink metadata file")
+        if not output.parent.is_dir():
+            parser.error("--output parent must already exist")
+        try:
+            with output.open("x", encoding="utf-8") as stream:
+                stream.write(rendered)
+        except OSError:
+            parser.error("--output could not be created exclusively")
         print(render_human(plan))
     else:
         print(render_human(plan), file=sys.stderr)

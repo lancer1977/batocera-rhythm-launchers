@@ -27,7 +27,7 @@ python3 - "$tmp/plan.json" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 assert p['status']=='READY' and p['estimatedBytes'] > 0
-assert p['files'][0]['destination']=='Song/chart.sm'
+assert p['files'][0]['destination']=='Group/Song/chart.sm'
 assert p['provenance']['inventory']['commit']=='072dcfb83e28fa3cd5b6754db668c006b01eeec7'
 assert p['provenance']['validator']['status']=='PASS'
 assert p['canonicalIdentity'].startswith('unresolved')
@@ -83,7 +83,7 @@ python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/
 python3 - "$tmp/nested.json" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1])); assert p['status']=='READY'
-assert 'Song/audio/theme.ogg' in [x['destination'] for x in p['files']]
+assert 'Group/Song/audio/theme.ogg' in [x['destination'] for x in p['files']]
 PY
 
 # Assets outside the selected song and symlinked source ancestors are refused.
@@ -125,8 +125,8 @@ p=json.load(open(sys.argv[1])); p['packs'][0]['songs'][0]['assets']=[]
 p['packs'][0]['assets']=[{'relativeLocation':'Group/banner.png','status':'present','sha256':sys.argv[2]}]
 json.dump(p,open(sys.argv[1],'w'))
 PY
-mkdir -p "$tmp/target"
-printf 'different target banner\n' > "$tmp/target/banner.png"
+mkdir -p "$tmp/target/Group"
+printf 'different target banner\n' > "$tmp/target/Group/banner.png"
 set +e
 python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/inventory.json" --pack pack:Group \
   --runtime stepmania-flatpak --target "$tmp/target" --profile stock --validator-report "$tmp/report.json" --validator-version 0.1.0 > "$tmp/pack-conflict.json" 2>/dev/null
@@ -158,7 +158,7 @@ set -e
 python3 - "$tmp/collision.json" <<'PYCASE'
 import json,sys
 p=json.load(open(sys.argv[1])); assert p['status']=='READY'
-assert {'banner.png','Song/banner.png'} <= {f['destination'] for f in p['files']}
+assert {'Group/banner.png','Group/Song/banner.png'} <= {f['destination'] for f in p['files']}
 assert 'destination-hash-collision' not in p['blockers']
 PYCASE
 
@@ -178,3 +178,14 @@ import json,sys
 p=json.load(open(sys.argv[1])); assert p['status']=='BLOCKED' and 'inventory-unavailable-or-invalid' in p['blockers']
 PY
 done
+
+# Explicit metadata output cannot overwrite media or an existing file.
+for output in "$tmp/source/Group/Song/chart.sm" "$tmp/target/plan.json" "$tmp/inventory.json"; do
+  set +e
+  python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/inventory.json" --pack pack:Group --runtime stepmania-flatpak --target "$tmp/target" --profile stock --output "$output" >/dev/null 2>/dev/null
+  result=$?
+  set -e
+  [ "$result" -eq 2 ]
+done
+[ "$(sha256sum "$tmp/source/Group/Song/chart.sm" | cut -d' ' -f1)" = "$hash" ]
+[ ! -e "$tmp/target/plan.json" ]

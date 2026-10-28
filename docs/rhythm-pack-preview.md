@@ -3,7 +3,7 @@
 The preview CLI is plan-only. It never applies a plan, downloads or extracts
 archives, launches a runtime, creates mount/unit files, or contacts a device,
 NAS, or network service. JSON is emitted to stdout by default. `--output FILE`
-may write the plan JSON metadata only.
+may create a new plan metadata file outside both source and target trees; existing files and symlink components are refused. The output parent must already exist.
 
 ## Inputs and version pins
 
@@ -35,7 +35,7 @@ or insufficient space blocks the plan. Existing identical target files are
 reported as `identical`; different files and non-file entries are conflicts.
 The plan records every source hash, destination, byte count, target hash/state,
 inventory/report provenance, estimated bytes to add, and available bytes.
-Target state is inspected read-only. Runtime is mandatory and selected from
+Target state is inspected read-only. Destination paths preserve the pack directory under the explicit runtime Songs root (for example, `Group/Song/chart.sm`). Runtime is mandatory and selected from
 `stepmania-flatpak` and `itgmania-portable`, each with a caller-supplied
 profile and Songs root; no cross-runtime default is inferred.
 
