@@ -66,3 +66,115 @@ python3 - "$tmp/link.json" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1])); assert 'source-symlink-unsupported' in p['blockers']
 PY
+rm "$tmp/source/Group/Song/escape"
+
+# The inventory's nested asset paths are preserved under their song directory.
+mkdir -p "$tmp/source/Group/Song/audio"
+printf 'nested audio fixture\n' > "$tmp/source/Group/Song/audio/theme.ogg"
+nested_hash="$(sha256sum "$tmp/source/Group/Song/audio/theme.ogg" | cut -d' ' -f1)"
+python3 - "$tmp/inventory.json" "$nested_hash" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); p['packs'][0]['songs'][0]['assets']=[
+ {'relativeLocation':'Group/Song/audio/theme.ogg','status':'present','sha256':sys.argv[2]}]
+json.dump(p,open(sys.argv[1],'w'))
+PY
+python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/inventory.json" --pack pack:Group \
+  --runtime stepmania-flatpak --target "$tmp/target" --profile stock --validator-report "$tmp/report.json" --validator-version 0.1.0 > "$tmp/nested.json" 2>/dev/null
+python3 - "$tmp/nested.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); assert p['status']=='READY'
+assert 'Song/audio/theme.ogg' in [x['destination'] for x in p['files']]
+PY
+
+# Assets outside the selected song and symlinked source ancestors are refused.
+python3 - "$tmp/inventory.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); p['packs'][0]['songs'][0]['assets'][0]['relativeLocation']='Group/Elsewhere/theme.ogg'
+json.dump(p,open(sys.argv[1],'w'))
+PY
+set +e
+python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/inventory.json" --pack pack:Group \
+  --runtime stepmania-flatpak --target "$tmp/target" --profile stock --validator-report "$tmp/report.json" --validator-version 0.1.0 > "$tmp/outside-song.json" 2>/dev/null
+status=$?
+set -e
+[ "$status" -eq 2 ]
+python3 - "$tmp/outside-song.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); assert 'source-path-escape-or-unsupported-path' in p['blockers']
+PY
+
+# Target ancestors, including Songs root, are checked for symlinks.
+ln -s "$tmp/target" "$tmp/target-link"
+set +e
+python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/inventory.json" --pack pack:Group \
+  --runtime stepmania-flatpak --target "$tmp/target-link" --profile stock --validator-report "$tmp/report.json" --validator-version 0.1.0 > "$tmp/target-link.json" 2>/dev/null
+status=$?
+set -e
+[ "$status" -eq 2 ]
+python3 - "$tmp/target-link.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); assert 'target-symlink-unsupported' in p['blockers']
+PY
+
+# Pack-level assets use the same target conflict checks as song assets.
+printf 'pack banner\n' > "$tmp/source/Group/banner.png"
+banner_hash="$(sha256sum "$tmp/source/Group/banner.png" | cut -d' ' -f1)"
+python3 - "$tmp/inventory.json" "$banner_hash" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); p['packs'][0]['songs'][0]['assets']=[]
+p['packs'][0]['assets']=[{'relativeLocation':'Group/banner.png','status':'present','sha256':sys.argv[2]}]
+json.dump(p,open(sys.argv[1],'w'))
+PY
+mkdir -p "$tmp/target"
+printf 'different target banner\n' > "$tmp/target/banner.png"
+set +e
+python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/inventory.json" --pack pack:Group \
+  --runtime stepmania-flatpak --target "$tmp/target" --profile stock --validator-report "$tmp/report.json" --validator-version 0.1.0 > "$tmp/pack-conflict.json" 2>/dev/null
+status=$?
+set -e
+[ "$status" -eq 2 ]
+python3 - "$tmp/pack-conflict.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); assert 'target-file-conflict' in p['blockers']
+PY
+
+# Pack banner and song banner occupy distinct destination paths; never flatten them.
+printf 'different banner\n' > "$tmp/source/Group/Song/banner.png"
+other_hash="$(sha256sum "$tmp/source/Group/Song/banner.png" | cut -d' ' -f1)"
+python3 - "$tmp/inventory.json" "$other_hash" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); p['packs'][0]['assets'][0]['relativeLocation']='Group/banner.png'
+p['packs'][0]['assets'][0]['sha256']='bdd1bb181d72d6a7ad144c79d43198143281797b91cc3e069499950138a5c559'
+p['packs'][0]['songs'][0]['assets']=[
+ {'relativeLocation':'Group/Song/banner.png','status':'present','sha256':sys.argv[2]}]
+json.dump(p,open(sys.argv[1],'w'))
+PY
+set +e
+python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/inventory.json" --pack pack:Group \
+  --runtime stepmania-flatpak --target "$tmp/other-target" --profile stock --validator-report "$tmp/report.json" --validator-version 0.1.0 > "$tmp/collision.json" 2>/dev/null
+status=$?
+set -e
+[ "$status" -eq 0 ]
+python3 - "$tmp/collision.json" <<'PYCASE'
+import json,sys
+p=json.load(open(sys.argv[1])); assert p['status']=='READY'
+assert {'banner.png','Song/banner.png'} <= {f['destination'] for f in p['files']}
+assert 'destination-hash-collision' not in p['blockers']
+PYCASE
+
+# Structurally malformed inventories return BLOCKED JSON, never a traceback.
+for malformed in '[]' '{"packs":[null]}' '{"packs":{},"schemaVersion":1,"identityVersion":1,"installationRoot":"x","diagnostics":[]}' '{"schemaVersion":1,"identityVersion":1,"installationRoot":"x","diagnostics":[],"packs":[{"packId":"p","relativeLocation":"Group","songs":[{"relativeLocation":"Group/Song","assets":[{"relativeLocation":5,"sha256":false,"status":1}],"charts":[]}]}]}'
+do
+  printf '%s\n' "$malformed" > "$tmp/inventory.json"
+  set +e
+  python3 "$repo/rhythm_pack_preview.py" --source "$tmp/source" --inventory "$tmp/inventory.json" --pack pack:Group \
+    --runtime stepmania-flatpak --target "$tmp/target" --profile stock --validator-report "$tmp/report.json" --validator-version 0.1.0 > "$tmp/malformed.json" 2>"$tmp/malformed.err"
+  status=$?
+  set -e
+  [ "$status" -eq 2 ]
+  ! rg -q 'Traceback' "$tmp/malformed.err"
+  python3 - "$tmp/malformed.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); assert p['status']=='BLOCKED' and 'inventory-unavailable-or-invalid' in p['blockers']
+PY
+done

@@ -32,6 +32,87 @@ def within(base: Path, path: Path) -> bool:
         return False
 
 
+def has_symlink_component(path: Path, *, include_leaf: bool = True) -> bool:
+    """Check every existing component without resolving away symlinks."""
+    parts = path.parts if include_leaf else path.parts[:-1]
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    for part in parts[1:] if path.is_absolute() else parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def valid_inventory_shape(inventory: object) -> bool:
+    if not isinstance(inventory, dict):
+        return False
+    if any(key in inventory and type(inventory[key]) is not int for key in ("schemaVersion", "identityVersion")):
+        return False
+    if "installationRoot" in inventory and not isinstance(inventory["installationRoot"], str):
+        return False
+    if not isinstance(inventory.get("diagnostics", []), list) or not isinstance(inventory.get("packs", []), list):
+        return False
+    for pack in inventory.get("packs", []):
+        if not isinstance(pack, dict) or not isinstance(pack.get("packId"), str):
+            return False
+        if not isinstance(pack.get("relativeLocation"), str):
+            return False
+        if not isinstance(pack.get("diagnostics", []), list):
+            return False
+        if not isinstance(pack.get("assets", []), list) or not isinstance(pack.get("songs", []), list):
+            return False
+        for asset in pack.get("assets", []):
+            if not valid_asset_shape(asset):
+                return False
+        for song in pack.get("songs", []):
+            if not isinstance(song, dict) or not isinstance(song.get("relativeLocation"), str):
+                return False
+            if not isinstance(song.get("diagnostics", []), list) or not isinstance(song.get("assets", []), list):
+                return False
+            if not isinstance(song.get("charts", []), list):
+                return False
+            if any(not valid_asset_shape(asset) for asset in song.get("assets", [])):
+                return False
+            for chart in song.get("charts", []):
+                if not isinstance(chart, dict):
+                    return False
+                if "sourceRelativeLocation" in chart and not isinstance(chart["sourceRelativeLocation"], str):
+                    return False
+                if "sourceRevision" in chart and not isinstance(chart["sourceRevision"], str):
+                    return False
+    return True
+
+
+def valid_asset_shape(asset: object) -> bool:
+    return (isinstance(asset, dict) and isinstance(asset.get("relativeLocation"), str)
+            and isinstance(asset.get("status"), str)
+            and isinstance(asset.get("sha256"), str))
+
+
+def inspect_target(target: Path, destination: PurePosixPath, actual: str, blockers: list[str]) -> tuple[str, str | None]:
+    dest = target.joinpath(*destination.parts)
+    if has_symlink_component(dest):
+        blockers.append("target-symlink-unsupported")
+        return "conflict", None
+    try:
+        if not dest.exists():
+            return "absent", None
+        if not dest.is_file():
+            blockers.append("target-conflict-unsupported-entry")
+            return "conflict", None
+        existing_hash = digest(dest)
+    except OSError:
+        blockers.append("target-conflict-unreadable")
+        return "conflict", None
+    if existing_hash != actual:
+        blockers.append("target-file-conflict")
+        return "conflict", existing_hash
+    return "identical", existing_hash
+
+
 def preview(args: argparse.Namespace) -> dict:
     source = Path(args.source).absolute()
     target = Path(args.target).absolute()
@@ -39,8 +120,13 @@ def preview(args: argparse.Namespace) -> dict:
     report_path = Path(args.validator_report).absolute() if args.validator_report else None
     blockers: list[str] = []
     entries: list[dict] = []
+    inventory_shape_ok = False
     try:
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory_shape_ok = valid_inventory_shape(inventory)
+        if not inventory_shape_ok:
+            blockers.append("inventory-unavailable-or-invalid")
+            inventory = {}
         if inventory.get("schemaVersion") != INVENTORY_VERSION:
             blockers.append("unsupported-inventory-schema")
         if inventory.get("identityVersion") != 1:
@@ -51,7 +137,8 @@ def preview(args: argparse.Namespace) -> dict:
         inventory = {}
         blockers.append("inventory-unavailable-or-invalid")
 
-    pack = next((p for p in inventory.get("packs", []) if p.get("packId") == args.pack), None)
+    pack = next((p for p in inventory.get("packs", []) if p.get("packId") == args.pack), None) if inventory_shape_ok else None
+    destinations: dict[str, str] = {}
     if pack is None:
         blockers.append("pack-not-found-in-inventory")
     else:
@@ -62,25 +149,46 @@ def preview(args: argparse.Namespace) -> dict:
             blockers.append("unsupported-pack-layout")
         else:
             pack_source = source / loc
+            if has_symlink_component(pack_source):
+                blockers.append("source-symlink-unsupported")
             for asset in pack.get("assets", []):
                 rel = asset.get("relativeLocation", "")
                 if not safe_relative(rel) or not rel.startswith(loc.rstrip("/") + "/"):
                     blockers.append("unsupported-pack-asset-layout")
                     continue
                 path = source / rel
-                if path.is_symlink() or not within(source, path.resolve(strict=False)):
+                if has_symlink_component(path):
                     blockers.append("source-symlink-unsupported")
+                    continue
+                try:
+                    if not within(source.resolve(), path.resolve(strict=False)):
+                        blockers.append("source-symlink-unsupported")
+                        continue
+                except OSError:
+                    blockers.append("missing-or-unreadable-asset")
                     continue
                 if asset.get("status") != "present" or not path.is_file():
                     blockers.append("missing-or-unreadable-asset")
                     continue
-                actual = digest(path)
+                try:
+                    actual = digest(path)
+                    size = path.stat().st_size
+                except OSError:
+                    blockers.append("missing-or-unreadable-asset")
+                    continue
                 if not asset.get("sha256") or actual != asset["sha256"]:
                     blockers.append("source-hash-mismatch")
                     continue
-                entries.append({"source": rel, "destination": str(PurePosixPath(rel).relative_to(PurePosixPath(loc))),
-                                "sha256": actual, "bytes": path.stat().st_size,
-                                "targetState": "absent", "targetSha256": None})
+                destination = PurePosixPath(rel).relative_to(PurePosixPath(loc))
+                dest_rel = str(destination)
+                previous = destinations.get(dest_rel)
+                if previous is not None and previous != actual:
+                    blockers.append("destination-hash-collision")
+                destinations[dest_rel] = actual
+                state, existing_hash = inspect_target(target, destination, actual, blockers)
+                entries.append({"source": rel, "destination": dest_rel,
+                                "sha256": actual, "bytes": size,
+                                "targetState": state, "targetSha256": existing_hash})
             for song in pack.get("songs", []):
                 songloc = song.get("relativeLocation", "")
                 if not safe_relative(songloc) or not songloc.startswith(loc.rstrip("/") + "/"):
@@ -100,48 +208,49 @@ def preview(args: argparse.Namespace) -> dict:
                     blockers.append("inventory-song-has-diagnostics")
                 for asset in files:
                     rel = asset.get("relativeLocation", "")
-                    if not safe_relative(rel):
+                    if not safe_relative(rel) or not rel.startswith(songloc.rstrip("/") + "/"):
                         blockers.append("source-path-escape-or-unsupported-path")
                         continue
                     path = source / rel
-                    if not within(source, path.resolve(strict=False)):
+                    if has_symlink_component(path):
                         blockers.append("source-path-escape-or-symlink")
+                        continue
+                    try:
+                        if not within(source.resolve(), path.resolve(strict=False)):
+                            blockers.append("source-path-escape-or-symlink")
+                            continue
+                    except OSError:
+                        blockers.append("missing-or-unreadable-asset")
                         continue
                     if asset.get("status") != "present" or not path.is_file():
                         blockers.append("missing-or-unreadable-asset")
                         continue
-                    if path.is_symlink() or not within(source, path.resolve()):
-                        blockers.append("source-symlink-unsupported")
+                    try:
+                        actual = digest(path)
+                        size = path.stat().st_size
+                    except OSError:
+                        blockers.append("missing-or-unreadable-asset")
                         continue
-                    actual = digest(path)
                     if not asset.get("sha256") or actual != asset["sha256"]:
                         blockers.append("source-hash-mismatch")
                         continue
-                    destination = PurePosixPath(songloc).relative_to(PurePosixPath(loc)) / Path(rel).name
+                    destination = PurePosixPath(songloc).relative_to(PurePosixPath(loc)) / PurePosixPath(rel).relative_to(PurePosixPath(songloc))
                     dest_rel = str(destination)
-                    dest = target.joinpath(*destination.parts)
-                    state = "absent"
-                    existing_hash = None
-                    if dest.exists() or dest.is_symlink():
-                        if dest.is_symlink() or not dest.is_file():
-                            blockers.append("target-conflict-unsupported-entry")
-                            state = "conflict"
-                        else:
-                            existing_hash = digest(dest)
-                            if existing_hash != actual:
-                                blockers.append("target-file-conflict")
-                                state = "conflict"
-                            else:
-                                state = "identical"
-                    entries.append({"source": rel, "destination": dest_rel, "sha256": actual,
-                                    "bytes": path.stat().st_size, "targetState": state,
+                    collision_key = dest_rel
+                    previous = destinations.get(collision_key)
+                    if previous is not None and previous != actual:
+                        blockers.append("destination-hash-collision")
+                    destinations[collision_key] = actual
+                    state, existing_hash = inspect_target(target, destination, actual, blockers)
+                    entries.append({"source": rel, "destination": str(destination), "sha256": actual,
+                                    "bytes": size, "targetState": state,
                                     "targetSha256": existing_hash})
 
     validator = {"status": "UNAVAILABLE", "version": None, "reportSchema": "stepmania-song-validator-0.1.0-report-v1"}
     if report_path and args.validator_version == VALIDATOR_VERSION:
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            if set(report) != {"library_path", "songs_scanned", "charts_scanned", "error_count", "warning_count", "ok", "findings"}:
+            if not isinstance(report, dict) or set(report) != {"library_path", "songs_scanned", "charts_scanned", "error_count", "warning_count", "ok", "findings"}:
                 validator["status"] = "UNKNOWN"
                 blockers.append("unsupported-validator-report-schema")
             elif report.get("library_path") != str(source):
