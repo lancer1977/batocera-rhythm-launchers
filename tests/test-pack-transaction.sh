@@ -100,6 +100,54 @@ except OSError: pass
 tid=next((t/tx.STATE_DIR).glob('*.json')).stem
 assert tx.recover(invoke(t,tid))['status']=='active'
 
+# Exact review regression: an absent owned stage plus a byte-matching unrelated
+# destination is never adopted or deleted by recovery or rollback.
+r,s,t,p,a=setup('review-unrelated-destination')
+def stop_before(point):
+ if point=='before-activation': raise OSError('fixture interruption')
+try: tx.apply(a,stop_before); raise AssertionError('fixture interruption did not fire')
+except OSError: pass
+tid=next((t/tx.STATE_DIR).glob('*.json')).stem
+stage=t/(tx.STAGE_PREFIX+tid); shutil.rmtree(stage)
+destination=t/'Group'; (destination/'Song').mkdir(parents=True)
+(destination/'Song'/'chart.sm').write_bytes((s/'Group'/'Song'/'chart.sm').read_bytes())
+snapshot={str(x.relative_to(t)):x.read_bytes() for x in destination.rglob('*') if x.is_file()}
+for rollback in (False, True):
+ try: tx.recover(invoke(t,tid),rollback=rollback); raise AssertionError('unowned matching destination adopted')
+ except RuntimeError: pass
+assert {str(x.relative_to(t)):x.read_bytes() for x in destination.rglob('*') if x.is_file()}==snapshot
+
+# An active directory replaced by a byte-identical copy is not the owned inode.
+r,s,t,p,a=setup('review-identical-replacement'); rec=tx.apply(a); destination=t/'Group'
+replacement=r/'replacement'; shutil.copytree(destination,replacement)
+shutil.rmtree(destination); shutil.copytree(replacement,destination)
+snapshot={str(x.relative_to(t)):x.read_bytes() for x in destination.rglob('*') if x.is_file()}
+for rollback in (False, True):
+ try: tx.recover(invoke(t,rec['id']),rollback=rollback); raise AssertionError('replacement adopted')
+ except RuntimeError: pass
+assert {str(x.relative_to(t)):x.read_bytes() for x in destination.rglob('*') if x.is_file()}==snapshot
+
+# Missing and false ownership evidence fail closed without changing the stage.
+for label, change in [('missing',lambda receipt: receipt.pop('ownership')),
+                      ('false',lambda receipt: receipt['ownership'].__setitem__('inode',receipt['ownership']['inode']+1))]:
+ r,s,t,p,a=setup('review-ownership-'+label)
+ try: tx.apply(a,stop_before); raise AssertionError('fixture interruption did not fire')
+ except OSError: pass
+ receipt_path=next((t/tx.STATE_DIR).glob('*.json')); receipt=json.loads(receipt_path.read_text())
+ tid=receipt['id']; change(receipt); receipt_path.write_text(json.dumps(receipt))
+ stage=t/(tx.STAGE_PREFIX+tid); snapshot={str(x.relative_to(stage)):x.read_bytes() for x in stage.rglob('*') if x.is_file()}
+ try: tx.recover(invoke(t,tid),rollback=True); raise AssertionError(label+' ownership evidence accepted')
+ except RuntimeError: pass
+ assert {str(x.relative_to(stage)):x.read_bytes() for x in stage.rglob('*') if x.is_file()}==snapshot
+
+# The reserved ownership marker path cannot be supplied by a source plan.
+r,s,t,p,a=setup('review-marker-collision'); altered=dict(p); altered['files']=[dict(p['files'][0],destination='Group/'+tx.OWNER_MARKER)]
+old_fresh_plan=tx.fresh_plan; tx.fresh_plan=lambda _: (altered,altered)
+try:
+ try: tx.apply(a); raise AssertionError('reserved ownership marker collision accepted')
+ except RuntimeError: pass
+finally: tx.fresh_plan=old_fresh_plan
+
 # Symlink target ancestry is refused.
 r,s,t,p,a=setup('symlink'); outside=r/'outside'; outside.mkdir(); shutil.rmtree(t); t.symlink_to(outside)
 try: tx.apply(a); raise AssertionError('target symlink accepted')

@@ -19,6 +19,7 @@ import rhythm_pack_preview as preview
 RECEIPT_SCHEMA = "batocera.rhythm-pack-transaction.v1"
 STATE_DIR = ".rhythm-pack-transactions"
 STAGE_PREFIX = ".rhythm-pack-stage-"
+OWNER_MARKER = ".rhythm-pack-owner"
 RENAME_NOREPLACE = 1
 
 
@@ -157,7 +158,22 @@ def load_receipt(state_fd: int, txid: str) -> dict:
             or value.get("before") != {"packRoot": "absent"}
             or value.get("status") not in {"staging", "staging-ready", "activation-pending", "active", "conflict", "rollback-conflict", "rolled-back"}
             or value.get("runtime") not in {"stepmania-flatpak", "itgmania-portable"}
-            or not isinstance(value.get("profile"), str) or not value["profile"]):
+            or not isinstance(value.get("profile"), str) or not value["profile"]
+            or not isinstance(value.get("packId"), str) or not value["packId"]
+            or not isinstance(value.get("targetSongsRoot"), str)
+            or not os.path.isabs(value["targetSongsRoot"])
+            or os.path.normpath(value["targetSongsRoot"]) != value["targetSongsRoot"]
+            or ("conflicts" in value and (not isinstance(value["conflicts"], list)
+                 or any(not isinstance(entry, str) or not entry for entry in value["conflicts"])) )):
+        fail("receipt unavailable or invalid")
+    ownership = value.get("ownership")
+    if ownership is not None and (not isinstance(ownership, dict)
+            or set(ownership) != {"device", "inode", "nonce", "marker"}
+            or type(ownership["device"]) is not int or ownership["device"] < 0
+            or type(ownership["inode"]) is not int or ownership["inode"] < 1
+            or not isinstance(ownership["nonce"], str) or len(ownership["nonce"]) != 64
+            or any(c not in "0123456789abcdef" for c in ownership["nonce"])
+            or ownership["marker"] != OWNER_MARKER):
         fail("receipt unavailable or invalid")
     pack_root = validate_rel(value.get("packRoot"))
     if len(pack_root) != 1:
@@ -167,6 +183,8 @@ def load_receipt(state_fd: int, txid: str) -> dict:
         if not isinstance(item, dict) or set(item) != {"path", "sha256", "bytes"}:
             fail("receipt unavailable or invalid")
         validate_rel(item["path"])
+        if validate_rel(item["path"])[0] == OWNER_MARKER:
+            fail("receipt unavailable or invalid")
         if (not isinstance(item["sha256"], str) or len(item["sha256"]) != 64
                 or any(c not in "0123456789abcdef" for c in item["sha256"])
                 or type(item["bytes"]) is not int or item["bytes"] < 0
@@ -217,9 +235,47 @@ def copy_verified(source_fd: int, stage_fd: int, item: dict, hook=None) -> None:
         os.close(sfd)
 
 
-def verify_tree(root_fd: int, files: list[dict]) -> tuple[bool, list[str]]:
+def stage_identity(fd: int) -> dict:
+    info = os.fstat(fd)
+    return {"device": info.st_dev, "inode": info.st_ino}
+
+
+def path_matches_fd(parent_fd: int, name: str, fd: int) -> bool:
+    try:
+        entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        opened = os.fstat(fd)
+    except OSError:
+        return False
+    return stat.S_ISDIR(entry.st_mode) and (entry.st_dev, entry.st_ino) == (opened.st_dev, opened.st_ino)
+
+
+def verify_ownership(fd: int, receipt: dict) -> bool:
+    ownership = receipt.get("ownership")
+    if not isinstance(ownership, dict) or stage_identity(fd) != {
+            "device": ownership.get("device"), "inode": ownership.get("inode")} :
+        return False
+    try:
+        marker = read_regular(fd, OWNER_MARKER)
+    except OSError:
+        return False
+    expected = (json.dumps({"id": receipt["id"], "nonce": ownership["nonce"]},
+                           sort_keys=True, separators=(",", ":")) + "\n").encode()
+    return marker == expected
+
+
+def remove_marker(fd: int, receipt: dict) -> bool:
+    if not verify_ownership(fd, receipt):
+        return False
+    os.unlink(OWNER_MARKER, dir_fd=fd)
+    os.fsync(fd)
+    return True
+
+
+def verify_tree(root_fd: int, files: list[dict], *, owned_marker: bool = False) -> tuple[bool, list[str]]:
     conflicts = []
     expected = {item["path"] for item in files}
+    if owned_marker:
+        expected.add(OWNER_MARKER)
     observed: set[str] = set()
 
     def walk(directory_fd: int, prefix: str = "") -> None:
@@ -263,11 +319,13 @@ def verify_tree(root_fd: int, files: list[dict]) -> tuple[bool, list[str]]:
     return not conflicts, conflicts
 
 
-def remaining_entries(root_fd: int) -> list[str]:
+def remaining_entries(root_fd: int, *, ignore_marker: bool = False) -> list[str]:
     entries = []
 
     def walk(directory_fd: int, prefix: str = "") -> None:
         for name in os.listdir(directory_fd):
+            if not prefix and ignore_marker and name == OWNER_MARKER:
+                continue
             info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             relative = f"{prefix}/{name}" if prefix else name
             if stat.S_ISDIR(info.st_mode):
@@ -321,7 +379,7 @@ def remove_owned(root_fd: int, files: list[dict]) -> list[str]:
                 os.close(parent)
         except OSError:
             pass
-    conflicts.extend(remaining_entries(root_fd))
+    conflicts.extend(remaining_entries(root_fd, ignore_marker=True))
     return sorted(set(conflicts))
 
 
@@ -379,22 +437,30 @@ def apply(args, hook=None) -> dict:
         files = [{"path": "/".join(validate_rel(item["destination"])[1:]),
                   "sha256": item["sha256"], "bytes": item["bytes"]}
                  for item in plan["files"]]
+        if any(validate_rel(item["destination"])[1:] == (OWNER_MARKER,) for item in plan["files"]):
+            fail("source collides with reserved transaction ownership marker")
         receipt = {"schema": RECEIPT_SCHEMA, "id": txid, "status": "staging", "runtime": args.runtime,
                    "profile": args.profile, "packId": plan["packId"], "targetSongsRoot": str(target),
                    "packRoot": root_name, "stageDirectory": stage_name, "files": files,
-                   "before": {"packRoot": "absent"}}
+                   "before": {"packRoot": "absent"}, "ownership": None}
         atomic_receipt(state_fd, receipt)
         os.mkdir(stage_name, 0o700, dir_fd=target_fd)
+        os.fsync(target_fd)
         stage_fd = open_child_dir(target_fd, stage_name)
         try:
+            nonce = secrets.token_hex(32)
+            write_exclusive(stage_fd, OWNER_MARKER,
+                (json.dumps({"id": txid, "nonce": nonce}, sort_keys=True, separators=(",", ":")) + "\n").encode())
+            os.fsync(stage_fd)
+            receipt["ownership"] = dict(stage_identity(stage_fd), nonce=nonce, marker=OWNER_MARKER)
+            atomic_receipt(state_fd, receipt)
             for item in plan["files"]:
                 staged_item = dict(item, destination="/".join(validate_rel(item["destination"])[1:]))
                 copy_verified(source_fd, stage_fd, staged_item, hook)
-            ok, conflicts = verify_tree(stage_fd, files)
+            ok, conflicts = verify_tree(stage_fd, files, owned_marker=True)
             if not ok:
                 fail("staged tree verification failed: " + ", ".join(conflicts))
             os.fsync(stage_fd)
-            os.close(stage_fd)
             if hook:
                 hook("before-activation")
             # Bind the activation boundary to the validator's complete source
@@ -416,6 +482,8 @@ def apply(args, hook=None) -> dict:
                     fail("source file changed before activation")
             rename_noreplace(stage_name, root_name, target_fd, target_fd)
             os.fsync(target_fd)
+            if not path_matches_fd(target_fd, root_name, stage_fd) or not verify_ownership(stage_fd, receipt):
+                fail("activated directory identity changed during rename")
             if hook:
                 hook("after-activation")
             receipt["status"] = "active"
@@ -448,149 +516,92 @@ def recover(args, rollback=False) -> dict:
             if rollback:
                 return receipt
             fail("transaction has already been rolled back")
-        if status in ("active", "activation-pending", "conflict", "rollback-conflict"):
-            pack_fd = open_child_dir(target_fd, root)
+        if receipt.get("ownership") is None:
+            receipt["status"] = "conflict"
+            receipt["conflicts"] = ["missing-ownership-evidence"]
+            atomic_receipt(state_fd, receipt)
+            fail("transaction has no durable ownership evidence; manual inspection required")
+
+        # Pin both candidate directories by fd. A matching tree is never ownership proof.
+        candidates = []
+        for name in (receipt["stageDirectory"], root):
             try:
-                ok, conflicts = verify_tree(pack_fd, receipt["files"])
-                if not rollback:
-                    if ok:
-                        receipt["status"] = "active"
-                        atomic_receipt(state_fd, receipt)
-                    else:
-                        receipt["status"] = "conflict"
-                        receipt["conflicts"] = conflicts
-                        atomic_receipt(state_fd, receipt)
-                        fail("activation recovery found changed/missing owned files: " + ", ".join(conflicts))
-                else:
-                    conflicts = remove_owned(pack_fd, receipt["files"])
-                    if conflicts:
-                        receipt["status"] = "rollback-conflict"
-                        receipt["conflicts"] = conflicts
-                    else:
-                        receipt["status"] = "rolled-back"
-                    atomic_receipt(state_fd, receipt)
-                    try:
-                        os.rmdir(root, dir_fd=target_fd)
-                    except OSError:
-                        pass
-            finally:
-                os.close(pack_fd)
-        elif status == "staging":
-            if not rollback:
-                try:
-                    stage_fd = open_child_dir(target_fd, receipt["stageDirectory"])
-                except FileNotFoundError:
-                    # Rename may have completed immediately before a crash and receipt update.
-                    try:
-                        pack_fd = open_child_dir(target_fd, root)
-                    except FileNotFoundError:
-                        # Receipt is written before the stage directory; an absent stage
-                        # and destination is a safe, still-pending transaction.
-                        return receipt
-                    try:
-                        ok, conflicts = verify_tree(pack_fd, receipt["files"])
-                    finally:
-                        os.close(pack_fd)
-                    if not ok:
-                        receipt["status"] = "conflict"
-                        receipt["conflicts"] = conflicts
-                        atomic_receipt(state_fd, receipt)
-                        fail("activation recovery found changed/missing owned files: " + ", ".join(conflicts))
-                    receipt["status"] = "active"
-                    atomic_receipt(state_fd, receipt)
-                    return receipt
-                try:
-                    ok, conflicts = verify_tree(stage_fd, receipt["files"])
-                finally:
-                    os.close(stage_fd)
-                if not ok:
-                    fail("pending stage is incomplete; inspect receipt before rollback")
-                receipt["status"] = "staging-ready"
+                fd = open_child_dir(target_fd, name)
+            except FileNotFoundError:
+                continue
+            candidates.append((name, fd, path_matches_fd(target_fd, name, fd)
+                               and verify_ownership(fd, receipt)))
+        owned = [(name, fd) for name, fd, proof in candidates if proof]
+        other = [(name, fd) for name, fd, proof in candidates if not proof]
+        for name, fd in other:
+            os.close(fd)
+        if len(owned) > 1:
+            for _, fd in owned: os.close(fd)
+            receipt["status"] = "conflict"
+            receipt["conflicts"] = ["multiple-ownership-identities"]
+            atomic_receipt(state_fd, receipt)
+            fail("multiple directories claim transaction ownership")
+        if not owned:
+            if candidates:
+                receipt["status"] = "conflict"
+                receipt["conflicts"] = ["ownership-mismatch"]
                 atomic_receipt(state_fd, receipt)
-            else:
-                # Only clean the transaction's private stage tree. Never touch target pack data.
-                try:
-                    stage_fd = open_child_dir(target_fd, receipt["stageDirectory"])
-                except FileNotFoundError:
-                    # A missing stage can mean activation won the crash race. Roll back
-                    # only after confirming the exact transaction-owned tree at target.
-                    try:
-                        pack_fd = open_child_dir(target_fd, root)
-                    except FileNotFoundError:
-                        pack_fd = None
-                    if pack_fd is not None:
-                        try:
-                            conflicts = remove_owned(pack_fd, receipt["files"])
-                        finally:
-                            os.close(pack_fd)
-                        try:
-                            os.rmdir(root, dir_fd=target_fd)
-                        except OSError:
-                            pass
-                    else:
-                        conflicts = []
-                    stage_fd = None
-                if stage_fd is not None:
-                    conflicts = remove_owned(stage_fd, receipt["files"])
-                    os.close(stage_fd)
-                    try:
-                        os.rmdir(receipt["stageDirectory"], dir_fd=target_fd)
-                    except OSError:
-                        pass
-                else:
-                    conflicts = []
-                receipt["status"] = "rolled-back" if not conflicts else "rollback-conflict"
-                if conflicts:
-                    receipt["conflicts"] = conflicts
+                fail("candidate directory ownership mismatch; manual inspection required")
+            if status in ("staging", "staging-ready") and not rollback:
+                return receipt
+            if status in ("staging", "staging-ready") and rollback:
+                receipt["status"] = "rolled-back"
                 atomic_receipt(state_fd, receipt)
-        elif status == "staging-ready":
+                return receipt
+            receipt["status"] = "conflict"
+            receipt["conflicts"] = ["owned-directory-missing"]
+            atomic_receipt(state_fd, receipt)
+            fail("owned directory is missing; manual inspection required")
+
+        name, owned_fd = owned[0]
+        try:
+            ok, conflicts = verify_tree(owned_fd, receipt["files"], owned_marker=True)
             if rollback:
-                stage_fd = open_child_dir(target_fd, receipt["stageDirectory"])
-                try:
-                    conflicts = remove_owned(stage_fd, receipt["files"])
-                finally:
-                    os.close(stage_fd)
-                try:
-                    os.rmdir(receipt["stageDirectory"], dir_fd=target_fd)
-                except OSError:
-                    pass
-                receipt["status"] = "rolled-back" if not conflicts else "rollback-conflict"
-                if conflicts:
-                    receipt["conflicts"] = conflicts
-                atomic_receipt(state_fd, receipt)
-            else:
-                try:
-                    pack_fd = open_child_dir(target_fd, root)
-                except FileNotFoundError:
-                    pack_fd = None
-                if pack_fd is not None:
+                if not path_matches_fd(target_fd, name, owned_fd) or not verify_ownership(owned_fd, receipt):
+                    fail("owned directory was replaced during rollback; manual inspection required")
+                conflicts = remove_owned(owned_fd, receipt["files"])
+                if not conflicts and remove_marker(owned_fd, receipt):
                     try:
-                        ok, conflicts = verify_tree(pack_fd, receipt["files"])
-                    finally:
-                        os.close(pack_fd)
-                    if not ok:
-                        receipt["status"] = "conflict"
-                        receipt["conflicts"] = conflicts
-                        atomic_receipt(state_fd, receipt)
-                        fail("activation recovery found changed/missing owned files: " + ", ".join(conflicts))
-                    receipt["status"] = "active"
-                    atomic_receipt(state_fd, receipt)
-                    return receipt
-                stage_fd = open_child_dir(target_fd, receipt["stageDirectory"])
-                try:
-                    ok, conflicts = verify_tree(stage_fd, receipt["files"])
-                finally:
-                    os.close(stage_fd)
-                if not ok:
-                    fail("pending stage changed; refusing activation")
-                rename_noreplace(receipt["stageDirectory"], root, target_fd, target_fd)
-                os.fsync(target_fd)
-                receipt["status"] = "activation-pending"
+                        if not path_matches_fd(target_fd, name, owned_fd):
+                            conflicts.append("owned-directory-replaced")
+                        else:
+                            os.rmdir(name, dir_fd=target_fd)
+                    except OSError: conflicts.append("directory-not-empty")
+                elif not conflicts:
+                    conflicts.append("ownership-marker-changed")
+                receipt["status"] = "rolled-back" if not conflicts else "rollback-conflict"
+                if conflicts: receipt["conflicts"] = conflicts
                 atomic_receipt(state_fd, receipt)
+            elif not ok:
+                receipt["status"] = "conflict"
+                receipt["conflicts"] = conflicts
+                atomic_receipt(state_fd, receipt)
+                fail("transaction tree changed; preserving files as conflict: " + ", ".join(conflicts))
+            elif name == root:
+                if not path_matches_fd(target_fd, name, owned_fd) or not verify_ownership(owned_fd, receipt):
+                    fail("active directory was replaced during recovery")
                 receipt["status"] = "active"
                 atomic_receipt(state_fd, receipt)
-        else:
-            fail("transaction is not recoverable from status " + str(status))
+            else:
+                if status == "staging":
+                    receipt["status"] = "staging-ready"
+                    atomic_receipt(state_fd, receipt)
+                else:
+                    if not path_matches_fd(target_fd, name, owned_fd) or not verify_ownership(owned_fd, receipt):
+                        fail("stage directory was replaced during activation")
+                    rename_noreplace(name, root, target_fd, target_fd)
+                    os.fsync(target_fd)
+                    receipt["status"] = "activation-pending"
+                    atomic_receipt(state_fd, receipt)
+                    receipt["status"] = "active"
+                    atomic_receipt(state_fd, receipt)
+        finally:
+            os.close(owned_fd)
         return receipt
     finally:
         if state_fd is not None:
