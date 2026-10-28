@@ -50,8 +50,8 @@ verification, and rollback boundaries.
 `rhythm_pack_preview.py` creates a deterministic plan from a real
 `Stepmania.Inventory.Cli` inventory schema v1 export. Supply the exact inventory
 pack ID, an explicit source root, a configured runtime Songs root and profile,
-and a report produced by `stepmania-song-validator` 0.1.0. A missing or
-unrecognized validator report blocks the plan. This tool does not copy files,
+and live validation by `stepmania-song-validator` 0.1.0. A report-only input is
+unverified and blocks the plan. This tool does not copy files,
 download content, launch a game, or change either runtime.
 
 Example (inventory and validator commands run against a synthetic/test root or
@@ -59,20 +59,19 @@ the operator's own local library):
 
 ```bash
 dotnet run --project /path/to/Stepmania.Inventory.Cli -- inventory-id /path/to/library > inventory.json
-stepmania-song-validator /path/to/library --json > validator-report.json
 python3 rhythm_pack_preview.py --source /path/to/library --inventory inventory.json \
   --pack 'pack:Group' --runtime stepmania-flatpak \
   --target /userdata/system/share/stepmania-flatpak-launcher/Songs \
-  --profile stock-stepmania-flatpak --validator-report validator-report.json \
-  --validator-version 0.1.0
+  --profile stock-stepmania-flatpak \
+  --validator-source /path/to/stepmania-song-validator/src
 ```
 
 The other runtime is `itgmania-portable`; its default Songs root is
 `/userdata/system/share/itgmania-portable-launcher/Songs` and profile is
 `stock-itgmania-portable`. Never point one runtime at the other's target. JSON
 goes to stdout by default; `--output plan.json` stores only plan metadata.
-Preview schema is `batocera.rhythm-pack-preview.v1`. Inventory provenance pins
-StepManiaSongManager commit `072dcfb83e28fa3cd5b6754db668c006b01eeec7` and
+Preview schema is `batocera.rhythm-pack-preview.v1`. Inventory provenance records
+adapter source pin `072dcfb83e28fa3cd5b6754db668c006b01eeec7` and
 inventory schema v1. The validator adapter accepts only version 0.1.0's exact
 report field set (`stepmania-song-validator-0.1.0-report-v1`). Chart identity
 remains unresolved: source hashes and locators are provenance scoped to this

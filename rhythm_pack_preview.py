@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
+import stat
 
 SCHEMA = "batocera.rhythm-pack-preview.v1"
 INVENTORY_VERSION = 1
@@ -22,6 +23,76 @@ def digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def source_snapshot(root: Path) -> str:
+    """Hash the complete regular-file tree; reject links and unreadable entries."""
+    root = root.absolute()
+    if root.is_symlink() or not root.is_dir():
+        raise OSError("source root is not a regular directory")
+    tree = hashlib.sha256()
+    for parent, dirs, files in os.walk(root, followlinks=False, onerror=lambda exc: (_ for _ in ()).throw(exc)):
+        dirs.sort()
+        files.sort()
+        for name in dirs + files:
+            path = Path(parent) / name
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise OSError("unsupported source tree entry")
+            if stat.S_ISREG(info.st_mode):
+                relative = path.relative_to(root).as_posix().encode("utf-8")
+                content_hash = digest(path)
+                tree.update(len(relative).to_bytes(8, "big"))
+                tree.update(relative)
+                tree.update(info.st_size.to_bytes(8, "big"))
+                tree.update(bytes.fromhex(content_hash))
+    return tree.hexdigest()
+
+
+def validate_report(report: object, source: Path) -> bool:
+    return (isinstance(report, dict)
+            and set(report) == {"library_path", "songs_scanned", "charts_scanned", "error_count", "warning_count", "ok", "findings"}
+            and report.get("library_path") == str(source)
+            and type(report.get("ok")) is bool and isinstance(report.get("findings"), list)
+            and all(isinstance(f, dict) and set(f) == {"category", "severity", "code", "message", "path"}
+                    and f.get("severity") in ("error", "warning") for f in report["findings"])
+            and all(type(report.get(k)) is int and report[k] >= 0 for k in
+                    ("songs_scanned", "charts_scanned", "error_count", "warning_count"))
+            and report["error_count"] == sum(f["severity"] == "error" for f in report["findings"])
+            and report["warning_count"] == sum(f["severity"] == "warning" for f in report["findings"])
+            and report["ok"] == (report["error_count"] == 0))
+
+
+def run_live_validator(source: Path, package_source: Path) -> tuple[dict | None, str | None, str | None]:
+    """Import the explicitly supplied trusted source in a clean isolated interpreter."""
+    try:
+        if not (package_source / "stepmania_song_validator" / "__init__.py").is_file():
+            return None, None, None
+        before = source_snapshot(source)
+        code = ("import json, sys; "
+                "sys.path.insert(0, sys.argv[1]); "
+                "import stepmania_song_validator; "
+                "from stepmania_song_validator.cli import main; "
+                "print(json.dumps({'version': stepmania_song_validator.__version__})); "
+                "raise SystemExit(main([sys.argv[2], '--json']))")
+        result = subprocess.run([sys.executable, "-I", "-c", code, str(package_source), str(source)],
+                                capture_output=True, text=True, check=False)
+        lines = result.stdout.splitlines()
+        if not lines:
+            return None, None, before
+        version_info = json.loads(lines[0])
+        version = version_info.get("version") if isinstance(version_info, dict) else None
+        if version != VALIDATOR_VERSION:
+            return None, version, before
+        report = json.loads("\n".join(lines[1:]))
+        after = source_snapshot(source)
+        if before != after:
+            return None, version, None
+        if not validate_report(report, source) or result.returncode not in (0, 1) or result.returncode != (0 if report["ok"] else 1):
+            return None, version, before
+        return report, version, before
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+        return None, None, None
 
 
 def within(base: Path, path: Path) -> bool:
@@ -118,6 +189,7 @@ def preview(args: argparse.Namespace) -> dict:
     target = Path(args.target).absolute()
     inventory_path = Path(args.inventory).absolute()
     report_path = Path(args.validator_report).absolute() if args.validator_report else None
+    validator_source = Path(args.validator_source).absolute() if args.validator_source else None
     blockers: list[str] = []
     entries: list[dict] = []
     inventory_shape_ok = False
@@ -247,33 +319,38 @@ def preview(args: argparse.Namespace) -> dict:
                                     "targetSha256": existing_hash})
 
     validator = {"status": "UNAVAILABLE", "version": None, "reportSchema": "stepmania-song-validator-0.1.0-report-v1"}
-    if report_path and args.validator_version == VALIDATOR_VERSION:
+    source_before = None
+    if validator_source:
+        try:
+            live_report, live_version, source_before = run_live_validator(source, validator_source)
+            validator["version"] = live_version
+            if live_version != VALIDATOR_VERSION:
+                validator["status"] = "UNKNOWN"
+                blockers.append("unsupported-validator-version")
+            elif live_report is None or source_before is None:
+                validator["status"] = "UNKNOWN"
+                blockers.append("live-validator-invalid-or-source-changed")
+            else:
+                validator.update(status="PASS" if live_report["ok"] else "FAIL", ok=live_report["ok"],
+                                 errorCount=live_report["error_count"], warningCount=live_report["warning_count"],
+                                 reportSha256=hashlib.sha256(json.dumps(live_report, sort_keys=True).encode()).hexdigest(),
+                                 verifiedModuleVersion=live_version, liveSourceSnapshotSha256=source_before)
+                if not live_report["ok"]:
+                    blockers.append("validator-failed")
+        except OSError:
+            validator["status"] = "UNAVAILABLE"
+            blockers.append("validator-unavailable")
+    elif report_path and args.validator_version == VALIDATOR_VERSION:
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            if not isinstance(report, dict) or set(report) != {"library_path", "songs_scanned", "charts_scanned", "error_count", "warning_count", "ok", "findings"}:
-                validator["status"] = "UNKNOWN"
-                blockers.append("unsupported-validator-report-schema")
-            elif report.get("library_path") != str(source):
-                validator["status"] = "UNKNOWN"
-                blockers.append("validator-report-source-mismatch")
-            elif (type(report.get("ok")) is not bool or not isinstance(report.get("findings"), list)
-                  or type(report.get("error_count")) is not int or type(report.get("warning_count")) is not int
-                  or type(report.get("songs_scanned")) is not int or type(report.get("charts_scanned")) is not int
-                  or report["error_count"] < 0 or report["warning_count"] < 0
-                  or report["songs_scanned"] < 0 or report["charts_scanned"] < 0
-                  or any(not isinstance(f, dict) or set(f) != {"category", "severity", "code", "message", "path"}
-                         or f.get("severity") not in ("error", "warning") for f in report["findings"])
-                  or report["error_count"] != sum(f["severity"] == "error" for f in report["findings"])
-                  or report["warning_count"] != sum(f["severity"] == "warning" for f in report["findings"])
-                  or report["ok"] != (report["error_count"] == 0)):
+            if not validate_report(report, source):
                 validator["status"] = "UNKNOWN"
                 blockers.append("invalid-validator-report")
             else:
-                validator.update(status="PASS" if report["ok"] else "FAIL", version=VALIDATOR_VERSION,
+                validator.update(status="UNVERIFIED", version=VALIDATOR_VERSION,
                                  ok=report["ok"], errorCount=report["error_count"],
                                  warningCount=report["warning_count"], reportSha256=digest(report_path))
-                if not report["ok"]:
-                    blockers.append("validator-failed")
+                blockers.append("validator-report-unverified")
         except (OSError, ValueError):
             validator["status"] = "UNKNOWN"
             blockers.append("validator-report-unavailable-or-invalid")
@@ -293,6 +370,21 @@ def preview(args: argparse.Namespace) -> dict:
                         blockers.append("source-symlink-unsupported")
                         dirs[:] = []
                         break
+    if validator.get("status") == "PASS":
+        try:
+            if any(digest(source / item["source"]) != item["sha256"] for item in entries):
+                raise OSError("selected inventory files changed before validation")
+            if source_snapshot(source) != source_before:
+                raise OSError("source changed after validation")
+        except OSError:
+            validator["status"] = "UNKNOWN"
+            validator.pop("ok", None)
+            validator.pop("errorCount", None)
+            validator.pop("warningCount", None)
+            validator.pop("reportSha256", None)
+            validator.pop("verifiedModuleVersion", None)
+            validator.pop("liveSourceSnapshotSha256", None)
+            blockers.append("live-validator-invalid-or-source-changed")
     total = sum(x["bytes"] for x in entries if x["targetState"] == "absent")
     try:
         free = shutil.disk_usage(target if target.exists() else target.parent).free
@@ -311,7 +403,7 @@ def preview(args: argparse.Namespace) -> dict:
         "packId": args.pack,
         "provenance": {"inventory": {"schemaVersion": INVENTORY_VERSION,
                          "provider": "StepmaniaSongManager Stepmania.Inventory.Cli",
-                         "commit": "072dcfb83e28fa3cd5b6754db668c006b01eeec7",
+                         "adapterSourceCommit": "072dcfb83e28fa3cd5b6754db668c006b01eeec7",
                          "sha256": digest(inventory_path) if inventory_path.is_file() else None},
                        "validator": validator},
         "files": sorted(entries, key=lambda item: item["destination"]),
@@ -338,6 +430,7 @@ def main() -> int:
     parser.add_argument("--profile", required=True, help="configured runtime profile identifier")
     parser.add_argument("--validator-report", help="validator 0.1.0 JSON report; absent means unavailable")
     parser.add_argument("--validator-version", help="must be exactly 0.1.0")
+    parser.add_argument("--validator-source", help="trusted Python package src root for isolated live validation")
     parser.add_argument("--output", help="write plan JSON metadata here; otherwise stdout")
     args = parser.parse_args()
     plan = preview(args)
