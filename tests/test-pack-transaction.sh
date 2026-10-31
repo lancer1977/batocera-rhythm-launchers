@@ -180,5 +180,62 @@ try:
  out=tx.recover(invoke(t,rec['id']),rollback=True); assert out['status']=='rollback-conflict' and 'Song/chart.sm' in out['conflicts'], out
 finally: signal.alarm(0)
 assert chart.exists()
+
+# Issue 20 finding 1: staging-ready receipts must retain the live activation validation contract.
+r,s,t,p,a=setup('issue20-validator-recovery')
+def stop_before_activation(point):
+ if point=='after-activation': raise OSError('fixture interruption')
+try: tx.apply(a,stop_before_activation); raise AssertionError('fixture interruption did not fire')
+except OSError: pass
+tid=next((t/tx.STATE_DIR).glob('*.json')).stem
+receipt=json.loads(next((t/tx.STATE_DIR).glob('*.json')).read_text())
+assert receipt.get('activationValidation') == p['provenance']['validator'], receipt
+
+# Issue 20 finding 2: unrelated nested empty directories remain conflicts.
+r,s,t,p,a=setup('issue20-nested-empty'); rec=tx.apply(a); empty=t/'Group'/'operator'/'empty'; empty.mkdir(parents=True)
+out=tx.recover(invoke(t,rec['id']),rollback=True)
+assert out['status']=='rollback-conflict' and 'operator/empty' in out['conflicts'], out
+assert (t/'Group'/tx.OWNER_MARKER).exists() and empty.is_dir()
+
+# Issue 20 finding 3: normalize --target before recording it in the receipt.
+r,s,t,p,a=setup('issue20-target-dotdot'); normalized=t/'normalized'; normalized.mkdir(); a.target=str(normalized/'..'/'normalized')
+try: tx.apply(a); raise AssertionError('target containing dot-dot accepted')
+except RuntimeError: pass
+
+# Issue 20 finding 4: replacing the stage pathname before activation is rejected.
+r,s,t,p,a=setup('issue20-stage-swap')
+def swap_stage(point):
+ if point=='before-activation':
+  stage=next(x for x in t.iterdir() if x.name.startswith(tx.STAGE_PREFIX)); stage.rename(t/'saved'); stage.mkdir(); (stage/'intruder').write_text('x')
+try: tx.apply(a,swap_stage); raise AssertionError('swapped stage pathname activated')
+except RuntimeError: pass
+assert not (t/'Group').exists()
+
+# Issue 20 finding 5: mutating staged bytes after tree verification is rejected.
+r,s,t,p,a=setup('issue20-stage-content')
+def mutate_stage(point):
+ if point=='before-activation':
+  stage=next(x for x in t.iterdir() if x.name.startswith(tx.STAGE_PREFIX)); (stage/'Song'/'chart.sm').write_text('changed;')
+try: tx.apply(a,mutate_stage); raise AssertionError('changed staged content activated')
+except RuntimeError: pass
+assert not (t/'Group').exists()
+
+# Issue 20 finding 6: a non-directory destination does not prevent staged recovery or rollback.
+r,s,t,p,a=setup('issue20-nondir-candidate')
+def stop_for_candidate(point):
+ if point=='before-activation': raise OSError('fixture interruption')
+try: tx.apply(a,stop_for_candidate); raise AssertionError('fixture interruption did not fire')
+except OSError: pass
+tid=next((t/tx.STATE_DIR).glob('*.json')).stem; (t/'Group').write_text('operator file')
+assert tx.recover(invoke(t,tid))['status']=='staging-ready'
+out=tx.recover(invoke(t,tid),rollback=True)
+assert out['status']=='rolled-back' and (t/'Group').read_text()=='operator file', out
+
+# Issue 20 finding 7: FIFO recovery and rollback return under a subprocess timeout.
+import subprocess, sys
+r,s,t,p,a=setup('issue20-fifo'); rec=tx.apply(a); chart=t/'Group'/'Song'/'chart.sm'; chart.unlink(); os.mkfifo(chart)
+code='import sys; sys.path.insert(0,sys.argv[1]); import rhythm_pack_transaction as tx; root=sys.argv[2]; args=type("A",(),dict(target=root,transaction=sys.argv[3]))();\nfor rollback in (False,True):\n try: tx.recover(args,rollback=rollback)\n except RuntimeError: pass'
+subprocess.run([sys.executable,'-c',code,os.environ['REPO'],str(t),rec['id']],timeout=3,check=True)
+assert chart.exists()
 print('PASS: staged pack transaction fixture cases')
 PY

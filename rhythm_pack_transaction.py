@@ -167,6 +167,14 @@ def load_receipt(state_fd: int, txid: str) -> dict:
             or ("conflicts" in value and (not isinstance(value["conflicts"], list)
                  or any(not isinstance(entry, str) or not entry for entry in value["conflicts"])) )):
         fail("receipt unavailable or invalid")
+    validation = value.get("activationValidation")
+    if validation is not None and (not isinstance(validation, dict)
+            or validation.get("status") != "PASS"
+            or validation.get("version") != preview.VALIDATOR_VERSION
+            or validation.get("verifiedModuleVersion") != preview.VALIDATOR_VERSION
+            or not isinstance(validation.get("reportSha256"), str)
+            or not isinstance(validation.get("liveSourceSnapshotSha256"), str)):
+        fail("receipt unavailable or invalid")
     ownership = value.get("ownership")
     if ownership is not None and (not isinstance(ownership, dict)
             or set(ownership) != {"device", "inode", "nonce", "marker"}
@@ -287,6 +295,8 @@ def verify_tree(root_fd: int, files: list[dict], *, owned_marker: bool = False) 
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
                 try:
                     walk(child, relative)
+                    if not os.listdir(child):
+                        conflicts.append(relative)
                     os.fsync(child)
                 finally:
                     os.close(child)
@@ -421,6 +431,8 @@ def apply(args, hook=None) -> dict:
         fail("--game-stopped acknowledgement is required")
     if not args.profile:
         fail("runtime profile is required")
+    if ".." in Path(args.target).parts:
+        fail("unsafe target path normalization")
     target = Path(args.target).absolute()
     target_fd = open_directory_walk(str(target), create=True)
     source_fd = open_directory_walk(str(Path(args.source).absolute()), create=False)
@@ -447,7 +459,8 @@ def apply(args, hook=None) -> dict:
         receipt = {"schema": RECEIPT_SCHEMA, "id": txid, "status": "staging", "runtime": args.runtime,
                    "profile": args.profile, "packId": plan["packId"], "targetSongsRoot": str(target),
                    "packRoot": root_name, "stageDirectory": stage_name, "files": files,
-                   "before": {"packRoot": "absent"}, "ownership": None}
+                   "before": {"packRoot": "absent"}, "ownership": None,
+                   "activationValidation": plan["provenance"]["validator"]}
         atomic_receipt(state_fd, receipt)
         os.mkdir(stage_name, 0o700, dir_fd=target_fd)
         os.fsync(target_fd)
@@ -488,6 +501,9 @@ def apply(args, hook=None) -> dict:
             # Rename works by pathname, so confirm the name still denotes the verified, owned stage first.
             if not path_matches_fd(target_fd, stage_name, stage_fd) or not verify_ownership(stage_fd, receipt):
                 fail("staging directory was replaced before activation")
+            ok, conflicts = verify_tree(stage_fd, files, owned_marker=True)
+            if not ok:
+                fail("staged tree changed before activation: " + ", ".join(conflicts))
             rename_noreplace(stage_name, root_name, target_fd, target_fd)
             os.fsync(target_fd)
             if not path_matches_fd(target_fd, root_name, stage_fd) or not verify_ownership(stage_fd, receipt):
@@ -535,7 +551,7 @@ def recover(args, rollback=False) -> dict:
         for name in (receipt["stageDirectory"], root):
             try:
                 fd = open_child_dir(target_fd, name)
-            except FileNotFoundError:
+            except (FileNotFoundError, NotADirectoryError):
                 continue
             candidates.append((name, fd, path_matches_fd(target_fd, name, fd)
                                and verify_ownership(fd, receipt)))
@@ -596,12 +612,20 @@ def recover(args, rollback=False) -> dict:
                 receipt["status"] = "active"
                 atomic_receipt(state_fd, receipt)
             else:
+                validation = receipt.get("activationValidation")
+                if (not isinstance(validation, dict) or validation.get("status") != "PASS"
+                        or validation.get("version") != preview.VALIDATOR_VERSION
+                        or validation.get("verifiedModuleVersion") != preview.VALIDATOR_VERSION):
+                    fail("activation validation requirements unavailable; manual inspection required")
                 if status == "staging":
                     receipt["status"] = "staging-ready"
                     atomic_receipt(state_fd, receipt)
                 else:
                     if not path_matches_fd(target_fd, name, owned_fd) or not verify_ownership(owned_fd, receipt):
                         fail("stage directory was replaced during activation")
+                    ok, conflicts = verify_tree(owned_fd, receipt["files"], owned_marker=True)
+                    if not ok:
+                        fail("staged tree verification failed before recovery activation: " + ", ".join(conflicts))
                     rename_noreplace(name, root, target_fd, target_fd)
                     os.fsync(target_fd)
                     receipt["status"] = "activation-pending"
