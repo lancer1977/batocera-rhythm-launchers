@@ -97,7 +97,8 @@ def hash_fd(fd: int) -> str:
 
 
 def read_regular(parent_fd: int, name: str) -> bytes:
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    # O_NONBLOCK keeps a FIFO from hanging the open before the type check below.
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             fail("unsupported transaction entry")
@@ -201,7 +202,7 @@ def copy_verified(source_fd: int, stage_fd: int, item: dict, hook=None) -> None:
     dst_parts = validate_rel(item["destination"])
     sparent = ensure_dir(source_fd, src_parts[:-1], create=False)
     try:
-        sfd = os.open(src_parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=sparent)
+        sfd = os.open(src_parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=sparent)
     finally:
         os.close(sparent)
     try:
@@ -305,7 +306,7 @@ def verify_tree(root_fd: int, files: list[dict], *, owned_marker: bool = False) 
         try:
             parent = ensure_dir(root_fd, parts[:-1], create=False)
             try:
-                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
                 try:
                     details = os.fstat(fd)
                     if not stat.S_ISREG(details.st_mode) or details.st_size != item["bytes"] or hash_fd(fd) != item["sha256"]:
@@ -331,7 +332,11 @@ def remaining_entries(root_fd: int, *, ignore_marker: bool = False) -> list[str]
             if stat.S_ISDIR(info.st_mode):
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
                 try:
+                    before = len(entries)
                     walk(child, relative)
+                    # An empty directory is operator content too; report it so rollback keeps ownership evidence.
+                    if len(entries) == before:
+                        entries.append(relative)
                 finally:
                     os.close(child)
             else:
@@ -351,7 +356,7 @@ def remove_owned(root_fd: int, files: list[dict]) -> list[str]:
         try:
             parent = ensure_dir(root_fd, parts[:-1], create=False)
             try:
-                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
                 try:
                     info = os.fstat(fd)
                     if not stat.S_ISREG(info.st_mode) or info.st_size != item["bytes"] or hash_fd(fd) != item["sha256"]:
@@ -480,6 +485,9 @@ def apply(args, hook=None) -> dict:
                         or source_path.stat().st_size != item["bytes"]
                         or preview.digest(source_path) != item["sha256"]):
                     fail("source file changed before activation")
+            # Rename works by pathname, so confirm the name still denotes the verified, owned stage first.
+            if not path_matches_fd(target_fd, stage_name, stage_fd) or not verify_ownership(stage_fd, receipt):
+                fail("staging directory was replaced before activation")
             rename_noreplace(stage_name, root_name, target_fd, target_fd)
             os.fsync(target_fd)
             if not path_matches_fd(target_fd, root_name, stage_fd) or not verify_ownership(stage_fd, receipt):

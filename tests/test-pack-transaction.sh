@@ -152,5 +152,33 @@ finally: tx.fresh_plan=old_fresh_plan
 r,s,t,p,a=setup('symlink'); outside=r/'outside'; outside.mkdir(); shutil.rmtree(t); t.symlink_to(outside)
 try: tx.apply(a); raise AssertionError('target symlink accepted')
 except (RuntimeError,OSError): pass
+
+# An operator-added empty directory is a rollback conflict; ownership evidence survives until it is removed.
+r,s,t,p,a=setup('review-empty-dir'); rec=tx.apply(a); empty=t/'Group'/'operator-empty-dir'; empty.mkdir()
+out=tx.recover(invoke(t,rec['id']),rollback=True); assert out['status']=='rollback-conflict' and out['conflicts']==['operator-empty-dir'], out
+assert (t/'Group'/tx.OWNER_MARKER).exists() and (t/'Group').exists()
+empty.rmdir()
+out=tx.recover(invoke(t,rec['id']),rollback=True); assert out['status']=='rolled-back' and not (t/'Group').exists(), out
+
+# A staging name replaced before the activation boundary is refused before any rename.
+r,s,t,p,a=setup('review-stage-replaced')
+def replace_stage(point):
+ if point=='before-activation':
+  stage=next(x for x in t.iterdir() if x.name.startswith(tx.STAGE_PREFIX)); stage.rename(t/'aside'); stage.mkdir(); (stage/'unrelated.txt').write_text('unrelated\n')
+try: tx.apply(a,hook=replace_stage); raise AssertionError('replaced stage activated')
+except RuntimeError as exc: assert 'replaced before activation' in str(exc), exc
+assert not (t/'Group').exists()
+
+# A FIFO in an installed pack cannot block recovery or rollback.
+import signal
+r,s,t,p,a=setup('review-fifo'); rec=tx.apply(a); chart=t/'Group'/'Song'/'chart.sm'; chart.unlink(); os.mkfifo(chart)
+def timed_out(*_): raise TimeoutError('recovery blocked on FIFO')
+signal.signal(signal.SIGALRM, timed_out); signal.alarm(5)
+try:
+ try: tx.recover(invoke(t,rec['id'])); raise AssertionError('fifo accepted')
+ except RuntimeError: pass
+ out=tx.recover(invoke(t,rec['id']),rollback=True); assert out['status']=='rollback-conflict' and 'Song/chart.sm' in out['conflicts'], out
+finally: signal.alarm(0)
+assert chart.exists()
 print('PASS: staged pack transaction fixture cases')
 PY
