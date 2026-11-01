@@ -10,6 +10,16 @@ Each transaction writes a versioned receipt in `.rhythm-pack-transactions/`, rec
 python3 rhythm_pack_transaction.py recover --target "$SONGS_ROOT" --transaction TRANSACTION_ID
 ```
 
+When recovery needs to activate a staged pack, provide the original live library and trusted validator source so recovery can rerun validation against the receipt's activation snapshot:
+
+```sh
+python3 rhythm_pack_transaction.py recover --target "$SONGS_ROOT" \
+  --transaction TRANSACTION_ID --source "$LIBRARY_ROOT" \
+  --validator-source "$VALIDATOR_SOURCE"
+```
+
+Recovery refuses activation if those inputs are missing, the live validator/source has drifted, or the receipt lacks the original activation validation provenance. The staged directory and ownership receipt are preserved for inspection or rollback. Rollback does not require these arguments. Recovery of an already-active transaction remains read-only and idempotent.
+
 Rollback removes only unchanged transaction-owned files. It preserves modified files and unrelated content, reports conflicts, and removes directories only when empty. Recovery around activation checks the receipt, stage, destination, and exact owned hashes; uncertain destinations are preserved as conflicts. Repeating recovery/rollback is safe.
 
 Plans must come from `rhythm_pack_preview.py` with `--validator-source` and be stored outside source and target trees. Example:

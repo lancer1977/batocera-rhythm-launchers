@@ -28,6 +28,9 @@ def setup(name):
  args=type('A',(),dict(plan=str(planfile),source=str(source),target=str(target),inventory=str(inv),validator_source=str(base/'validator'),pack='pack:Group',runtime='stepmania-flatpak',profile='fixture',game_stopped=True))()
  return root,source,target,plan,args
 def invoke(target,tid): return type('A',(),dict(target=str(target),transaction=tid))()
+def recover_args(target,tid,source=None,validator_source=None):
+ return type('A',(),dict(target=str(target),transaction=tid,source=str(source) if source else None,
+                          validator_source=str(validator_source) if validator_source else None))()
 
 # Apply, receipt ownership, recover idempotence, and rollback.
 r,s,t,p,a=setup('success'); source_before=preview.source_snapshot(s); rec=tx.apply(a); assert rec['status']=='active' and (t/'Group'/'Song'/'chart.sm').is_file()
@@ -76,7 +79,40 @@ try: tx.apply(a,before); raise AssertionError('fault injection did not fire')
 except OSError: pass
 tid=next((t/tx.STATE_DIR).glob('*.json')).stem
 assert tx.recover(invoke(t,tid))['status']=='staging-ready'
-assert tx.recover(invoke(t,tid))['status']=='active'
+assert tx.recover(recover_args(t,tid,s,base/'validator'))['status']=='active'
+
+# Issue 20: a rejected apply cannot be completed later after live-source drift.
+r,s,t,p,a=setup('issue20-rejected-apply-source-drift')
+def drift_after_live_validation(point):
+ if point=='before-activation':
+  (s/'Group'/'Song'/'chart.sm').write_text('now invalid')
+  raise OSError('fixture interruption after source drift')
+try: tx.apply(a,drift_after_live_validation); raise AssertionError('fixture interruption did not fire')
+except OSError: pass
+tid=next((t/tx.STATE_DIR).glob('*.json')).stem
+assert tx.recover(invoke(t,tid))['status']=='staging-ready'
+try: tx.recover(recover_args(t,tid,s,base/'validator')); raise AssertionError('drifted stage activated')
+except RuntimeError: pass
+assert (t/(tx.STAGE_PREFIX+tid)).is_dir() and not (t/'Group').exists()
+assert tx.recover(recover_args(t,tid,s,base/'validator'),rollback=True)['status']=='rolled-back'
+
+# Staged recovery requires explicit live source and validator evidence; rollback stays independent.
+r,s,t,p,a=setup('issue20-recovery-requires-validation')
+def stop_for_validation(point):
+ if point=='before-activation': raise OSError('fixture interruption')
+try: tx.apply(a,stop_for_validation); raise AssertionError('fixture interruption did not fire')
+except OSError: pass
+tid=next((t/tx.STATE_DIR).glob('*.json')).stem
+assert tx.recover(invoke(t,tid))['status']=='staging-ready'
+try: tx.recover(invoke(t,tid)); raise AssertionError('recovery without live inputs activated')
+except RuntimeError: pass
+assert (t/(tx.STAGE_PREFIX+tid)).is_dir() and not (t/'Group').exists()
+assert tx.recover(recover_args(t,tid,s,base/'validator'))['status']=='active'
+r,s,t,p,a=setup('issue20-recovery-rollback-without-validation')
+try: tx.apply(a,stop_for_validation); raise AssertionError('fixture interruption did not fire')
+except OSError: pass
+tid=next((t/tx.STATE_DIR).glob('*.json')).stem
+assert tx.recover(invoke(t,tid),rollback=True)['status']=='rolled-back'
 
 # Simulate interruption after activation rename while the receipt remains staging-ready.
 r,s,t,p,a=setup('crash-receipt')
