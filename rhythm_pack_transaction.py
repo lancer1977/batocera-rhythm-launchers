@@ -615,12 +615,30 @@ def recover(args, rollback=False) -> dict:
                 validation = receipt.get("activationValidation")
                 if (not isinstance(validation, dict) or validation.get("status") != "PASS"
                         or validation.get("version") != preview.VALIDATOR_VERSION
-                        or validation.get("verifiedModuleVersion") != preview.VALIDATOR_VERSION):
+                        or validation.get("verifiedModuleVersion") != preview.VALIDATOR_VERSION
+                        or not validation.get("liveSourceSnapshotSha256")
+                        or not validation.get("reportSha256")):
                     fail("activation validation requirements unavailable; manual inspection required")
                 if status == "staging":
                     receipt["status"] = "staging-ready"
                     atomic_receipt(state_fd, receipt)
                 else:
+                    if not getattr(args, "source", None) or not getattr(args, "validator_source", None):
+                        fail("staged recovery activation requires --source and --validator-source")
+                    source = Path(args.source).absolute()
+                    validator_source = Path(args.validator_source).absolute()
+                    live_report, live_version, live_snapshot = preview.run_live_validator(source, validator_source)
+                    if (live_report is None or live_version != preview.VALIDATOR_VERSION
+                            or live_snapshot != validation.get("liveSourceSnapshotSha256")
+                            or hashlib.sha256(json.dumps(live_report, sort_keys=True).encode()).hexdigest()
+                            != validation.get("reportSha256")):
+                        fail("live validator/source changed before recovery activation")
+                    for item in receipt["files"]:
+                        source_path = source / root / Path(*validate_rel(item["path"]))
+                        if (not source_path.is_file() or source_path.is_symlink()
+                                or source_path.stat().st_size != item["bytes"]
+                                or preview.digest(source_path) != item["sha256"]):
+                            fail("source file changed before recovery activation")
                     if not path_matches_fd(target_fd, name, owned_fd) or not verify_ownership(owned_fd, receipt):
                         fail("stage directory was replaced during activation")
                     ok, conflicts = verify_tree(owned_fd, receipt["files"], owned_marker=True)
@@ -660,9 +678,13 @@ def parser() -> argparse.ArgumentParser:
     tx_p = sub.add_parser("recover", help="inspect/finish a durable transaction")
     tx_p.add_argument("--target", required=True)
     tx_p.add_argument("--transaction", required=True)
+    tx_p.add_argument("--source")
+    tx_p.add_argument("--validator-source")
     rb_p = sub.add_parser("rollback", help="remove only unchanged transaction-owned files")
     rb_p.add_argument("--target", required=True)
     rb_p.add_argument("--transaction", required=True)
+    rb_p.add_argument("--source")
+    rb_p.add_argument("--validator-source")
     return p
 
 
