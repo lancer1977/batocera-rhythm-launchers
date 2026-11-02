@@ -1,0 +1,42 @@
+# PROPOSAL ONLY: GitHub does not load workflow files from this directory.
+# Copy into .github/workflows only after the separate activation gates in README.md.
+name: Proposed fixture validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  fixture-validation:
+    # Fork pull requests are explicitly skipped. There is no hosted-runner fallback.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, pr-validation, batocera-rhythm-launchers-validation]
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact triggering source head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Create task-private temporary directory
+        env:
+          TASK_TMPDIR: ${{ runner.temp }}/batocera-rhythm-launchers-fixture-validation
+        run: mkdir -p "$TASK_TMPDIR"
+
+      - name: Run synthetic fixture checks
+        env:
+          TMPDIR: ${{ runner.temp }}/batocera-rhythm-launchers-fixture-validation
+          TMP: ${{ runner.temp }}/batocera-rhythm-launchers-fixture-validation
+          TEMP: ${{ runner.temp }}/batocera-rhythm-launchers-fixture-validation
+        run: |
+          bash tests/install-config-preservation.sh
+          bash tests/test-fd-ancestry.sh
+          bash tests/test-versioned-extract.sh
+          bash tests/test-pack-preview.sh
+          bash tests/test-pack-transaction.sh
