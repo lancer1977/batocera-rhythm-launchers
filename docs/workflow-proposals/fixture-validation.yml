@@ -24,6 +24,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      - name: Check out the pinned public validator source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: lancer1977/stepmania-song-validator
+          ref: d0353debe1610527f922714c79fde28834d44014
+          path: .validator-source
+          persist-credentials: false
+
       - name: Create task-private temporary directory
         env:
           TASK_TMPDIR: ${{ runner.temp }}/batocera-rhythm-launchers-fixture-validation
@@ -31,6 +39,7 @@ jobs:
 
       - name: Run synthetic fixture checks
         env:
+          RHYTHM_VALIDATOR_SOURCE: ${{ github.workspace }}/.validator-source/src
           TMPDIR: ${{ runner.temp }}/batocera-rhythm-launchers-fixture-validation
           TMP: ${{ runner.temp }}/batocera-rhythm-launchers-fixture-validation
           TEMP: ${{ runner.temp }}/batocera-rhythm-launchers-fixture-validation
@@ -40,3 +49,4 @@ jobs:
           bash tests/test-versioned-extract.sh
           bash tests/test-pack-preview.sh
           bash tests/test-pack-transaction.sh
+          bash tests/test-validator-integration.sh

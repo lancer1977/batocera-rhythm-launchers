@@ -14,7 +14,8 @@ may create a new plan metadata file outside both source and target trees; existi
   requested `packId`. This is an adapter source pin, not proof of the inventory's
   producer. Synthetic inventories are fixtures, not provider integrations.
 * `--validator-source PATH` enables live validation from an already available,
-  trusted Python package source root. The preview runs `sys.executable -I`,
+  trusted Python package source root. The preview runs `sys.executable -I -B`,
+  disabling bytecode-cache writes into that source checkout. It
   inserts only that supplied root into `sys.path`, verifies module version
   `0.1.0`, and invokes `cli.main([source, "--json"])`. It snapshots every
   regular source-tree file before and after validation and rejects symlinks,
@@ -76,9 +77,9 @@ RHYTHM_VALIDATOR_SOURCE=/path/to/stepmania-song-validator/src \
 The real-validator transaction lane requires that source path and fails rather
 than skipping when it is absent/unusable. It uses only synthetic chart/audio-byte
 fixtures in temporary roots, not private media, engine playback, or actual-library
-proof. It covers preview/apply/recovery/rollback; the reporting suite separately
-covers diagnostics, warning-only policy, malformed reports and unavailable versus
-incompatible providers. These explicit Python suites must be invoked separately
-from a runner that only globs `tests/*.sh`.
+proof. `bash tests/test-validator-integration.sh` runs both Python suites and is
+discovered by the workspace's `tests/*.sh` selector. Before running launcher
+workspace gates, explicitly export `RHYTHM_VALIDATOR_SOURCE` to the trusted
+validator checkout's `src`; the wrapper fails clearly when it is absent.
 
 The preview installs no packages and performs no network or shell invocation.

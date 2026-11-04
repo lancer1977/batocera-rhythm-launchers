@@ -15,7 +15,10 @@ filesystem reuses a deleted pack directory's inode. Legacy receipts lacking
 closed without deleting or adopting content; they are not automatically upgraded.
 These local filesystem checks are not signatures or a defense against a same-user
 actor who can rewrite receipts, and do not establish physical filesystem support.
-Do not remove pending stages manually. Inspect or finish a transaction with:
+Do not remove pending stages manually. Recursive chmod/chown, relabeling or other
+marker metadata changes (and mounts that change device identity) also fail closed.
+The operator must inspect such preserved data manually; the tool does not
+silently adopt it or rewrite its ownership stamp. Inspect or finish a transaction with:
 
 ```sh
 python3 rhythm_pack_transaction.py recover --target "$SONGS_ROOT" --transaction TRANSACTION_ID

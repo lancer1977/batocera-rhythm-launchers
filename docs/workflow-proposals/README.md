@@ -27,7 +27,11 @@ This document does not register a runner or authorize activation.
 Fork pull requests explicitly skip the job. There is no paid GitHub-hosted
 fallback; an untrusted-code lane needs a separate reviewed proposal.
 
-The commands are the repository's five existing shell fixture tests:
+The commands include the five original shell suites and the explicit validator
+integration wrapper. The proposal checks out public `lancer1977/stepmania-song-validator`
+at immutable `d0353debe1610527f922714c79fde28834d44014` into `.validator-source`
+(with credential persistence disabled), and supplies its `src` as
+`RHYTHM_VALIDATOR_SOURCE`. No package installation or provider fallback is needed.
 
 ```sh
 bash tests/install-config-preservation.sh
@@ -35,7 +39,14 @@ bash tests/test-fd-ancestry.sh
 bash tests/test-versioned-extract.sh
 bash tests/test-pack-preview.sh
 bash tests/test-pack-transaction.sh
+bash tests/test-validator-integration.sh
 ```
+
+The integration wrapper refuses an absent provider and runs the reporting and
+real-validator transaction Python suites. It is also found by the workspace's
+`tests/*.sh` selector, so local workspace validation must explicitly export
+`RHYTHM_VALIDATOR_SOURCE` to the trusted validator `src` checkout. An absent
+provider is unavailable evidence, never a passing synthetic fallback.
 
 They use synthetic temporary fixtures. They are not NAS, device, installed
 library, or production validation. The template directs temporary files to a
