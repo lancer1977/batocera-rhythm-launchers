@@ -75,7 +75,7 @@ def run_live_validator(source: Path, package_source: Path) -> tuple[dict | None,
                 "from stepmania_song_validator.cli import main; "
                 "print(json.dumps({'version': stepmania_song_validator.__version__})); "
                 "raise SystemExit(main([sys.argv[2], '--json']))")
-        result = subprocess.run([sys.executable, "-I", "-c", code, str(package_source), str(source)],
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(package_source), str(source)],
                                 capture_output=True, text=True, check=False)
         lines = result.stdout.splitlines()
         if not lines:
@@ -322,21 +322,26 @@ def preview(args: argparse.Namespace) -> dict:
     source_before = None
     if validator_source:
         try:
-            live_report, live_version, source_before = run_live_validator(source, validator_source)
-            validator["version"] = live_version
-            if live_version != VALIDATOR_VERSION:
-                validator["status"] = "UNKNOWN"
-                blockers.append("unsupported-validator-version")
-            elif live_report is None or source_before is None:
-                validator["status"] = "UNKNOWN"
-                blockers.append("live-validator-invalid-or-source-changed")
+            if not (validator_source / "stepmania_song_validator" / "__init__.py").is_file():
+                validator["status"] = "UNAVAILABLE"
+                blockers.append("validator-unavailable")
             else:
-                validator.update(status="PASS" if live_report["ok"] else "FAIL", ok=live_report["ok"],
-                                 errorCount=live_report["error_count"], warningCount=live_report["warning_count"],
-                                 reportSha256=hashlib.sha256(json.dumps(live_report, sort_keys=True).encode()).hexdigest(),
-                                 verifiedModuleVersion=live_version, liveSourceSnapshotSha256=source_before)
-                if not live_report["ok"]:
-                    blockers.append("validator-failed")
+                live_report, live_version, source_before = run_live_validator(source, validator_source)
+                validator["version"] = live_version
+                if live_version is not None and live_version != VALIDATOR_VERSION:
+                    validator["status"] = "UNKNOWN"
+                    blockers.append("unsupported-validator-version")
+                elif live_version is None or live_report is None or source_before is None:
+                    validator["status"] = "UNKNOWN"
+                    blockers.append("live-validator-invalid-or-source-changed")
+                else:
+                    validator.update(status="PASS" if live_report["ok"] else "FAIL", ok=live_report["ok"],
+                                     errorCount=live_report["error_count"], warningCount=live_report["warning_count"],
+                                     reportSha256=hashlib.sha256(json.dumps(live_report, sort_keys=True).encode()).hexdigest(),
+                                     verifiedModuleVersion=live_version, liveSourceSnapshotSha256=source_before,
+                                     findings=[dict(f) for f in live_report["findings"]])
+                    if not live_report["ok"]:
+                        blockers.append("validator-failed")
         except OSError:
             validator["status"] = "UNAVAILABLE"
             blockers.append("validator-unavailable")
@@ -349,7 +354,8 @@ def preview(args: argparse.Namespace) -> dict:
             else:
                 validator.update(status="UNVERIFIED", version=VALIDATOR_VERSION,
                                  ok=report["ok"], errorCount=report["error_count"],
-                                 warningCount=report["warning_count"], reportSha256=digest(report_path))
+                                 warningCount=report["warning_count"], reportSha256=digest(report_path),
+                                 findings=[dict(f) for f in report["findings"]])
                 blockers.append("validator-report-unverified")
         except (OSError, ValueError):
             validator["status"] = "UNKNOWN"
@@ -384,6 +390,7 @@ def preview(args: argparse.Namespace) -> dict:
             validator.pop("reportSha256", None)
             validator.pop("verifiedModuleVersion", None)
             validator.pop("liveSourceSnapshotSha256", None)
+            validator.pop("findings", None)
             blockers.append("live-validator-invalid-or-source-changed")
     total = sum(x["bytes"] for x in entries if x["targetState"] == "absent")
     try:
@@ -458,10 +465,16 @@ def main() -> int:
 
 
 def render_human(plan: dict) -> str:
+    validator = plan["provenance"]["validator"]
     lines = [f"Rhythm pack preview: {plan['status']}", f"Runtime: {plan['runtime']} ({plan['profile']})",
              f"Source pack: {plan['packId']}", f"Target Songs root: {plan['targetSongsRoot']}",
              f"Files: {len(plan['files'])}; bytes to add: {plan['estimatedBytes']}",
-             f"Validator: {plan['provenance']['validator']['status']}"]
+             f"Validator: {validator['status']}"]
+    if "errorCount" in validator and "warningCount" in validator:
+        lines.append(f"Validator counts: errors={validator['errorCount']} warnings={validator['warningCount']}")
+    for finding in validator.get("findings", []):
+        lines.append(f"  FINDING {finding['severity']} {finding['code']} "
+                     f"path={json.dumps(finding['path'])} message={json.dumps(finding['message'])}")
     for item in plan["files"]:
         lines.append(f"  {item['targetState']:9} {item['source']} -> {item['destination']} sha256:{item['sha256']}")
     for blocker in plan["blockers"]:

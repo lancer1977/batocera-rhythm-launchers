@@ -19,7 +19,11 @@ may create a new plan metadata file outside both source and target trees; existi
   `0.1.0`, and invokes `cli.main([source, "--json"])`. It snapshots every
   regular source-tree file before and after validation and rejects symlinks,
   unsupported entries, read errors, or any change. READY records the verified
-  module version, live source snapshot SHA-256, and report SHA-256.
+  module version, live source snapshot SHA-256, report SHA-256, and the report's
+  actionable findings in `provenance.validator.findings`. Warnings alone do not
+  block readiness: human output displays error/warning counts and each finding's
+  severity, code, path, and message, including for READY plans. A static PASS is
+  not engine/playability or advanced-feature acceptance.
 * `--validator-report` is display-only. A valid supplied report is labeled
   `UNVERIFIED` and blocks readiness because the preview cannot establish it
   describes the current source. Its exact report fields are
@@ -49,16 +53,32 @@ profile and Songs root; no cross-runtime default is inferred.
 
 Output schema: `batocera.rhythm-pack-preview.v1`. Repeated inputs produce
 stable JSON apart from filesystem-derived free space and explicitly selected
-runtime/target metadata. Plans are input to a later staged-apply issue; they are
-not authorization to apply.
+runtime/target metadata. The additive findings field means plans generated before
+this diagnostic change must be regenerated: apply compares the complete plan
+against fresh validation and rejects missing/stale fields. Plans are not
+authorization to apply.
 
 ## Validation
 
-Run `bash tests/test-pack-preview.sh`. The synthetic inventory and mutation
-validator are explicitly test fixtures; the integration test invokes the actual
-validator source checkout when available. Fixtures contain text only (no
-private audio or song packs). The test checks report-only blocking, live READY,
-stale-report rejection when the actual validator finds a current error, source
-mutation detection, unchanged targets, deterministic mapping, and safety blockers.
+Run `bash tests/test-pack-preview.sh` and
+`python3 tests/test-pack-validator-reporting.py` for synthetic adapter/reporting
+regressions. The shell preview suite defaults to a synthetic validator package;
+that default is not real-validator qualification. To explicitly use the real
+trusted validator source with synthetic libraries:
+
+```sh
+RHYTHM_VALIDATOR_SOURCE=/path/to/stepmania-song-validator/src \
+  bash tests/test-pack-preview.sh
+RHYTHM_VALIDATOR_SOURCE=/path/to/stepmania-song-validator/src \
+  python3 tests/test-real-validator-transaction.py
+```
+
+The real-validator transaction lane requires that source path and fails rather
+than skipping when it is absent/unusable. It uses only synthetic chart/audio-byte
+fixtures in temporary roots, not private media, engine playback, or actual-library
+proof. It covers preview/apply/recovery/rollback; the reporting suite separately
+covers diagnostics, warning-only policy, malformed reports and unavailable versus
+incompatible providers. These explicit Python suites must be invoked separately
+from a runner that only globs `tests/*.sh`.
 
 The preview installs no packages and performs no network or shell invocation.

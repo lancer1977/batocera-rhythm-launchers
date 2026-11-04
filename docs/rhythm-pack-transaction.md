@@ -4,7 +4,18 @@
 
 The destination pack directory must be absent. Existing packs are refused without merging or replacing content. Files are copied into a private staging directory under Songs, checked against preview hashes, then activated by same-filesystem atomic directory rename. Free space is rechecked before staging. Directory traversal uses `O_NOFOLLOW`; symlinks, traversal, and unsupported entries are rejected.
 
-Each transaction writes a versioned receipt in `.rhythm-pack-transactions/`, recording runtime/profile/pack, prior destination state, and exact owned paths, sizes, and SHA-256 values. Stages and receipts survive interruption. Do not remove pending stages manually. Inspect or finish a transaction with:
+Each transaction writes a versioned receipt in `.rhythm-pack-transactions/`, recording runtime/profile/pack, prior destination state, and exact owned paths, sizes, and SHA-256 values. Stages and receipts survive interruption.
+
+Ownership binds the directory device/inode and nonce **plus** the marker file's
+device/inode, byte count, modification time and change time in nanoseconds.
+Marker bytes and metadata are read from the same non-following, nonblocking
+regular-file descriptor. This rejects a byte-identical copied marker when a
+filesystem reuses a deleted pack directory's inode. Legacy receipts lacking
+`ownership.markerIdentity`, or receipts with malformed marker metadata, fail
+closed without deleting or adopting content; they are not automatically upgraded.
+These local filesystem checks are not signatures or a defense against a same-user
+actor who can rewrite receipts, and do not establish physical filesystem support.
+Do not remove pending stages manually. Inspect or finish a transaction with:
 
 ```sh
 python3 rhythm_pack_transaction.py recover --target "$SONGS_ROOT" --transaction TRANSACTION_ID
@@ -32,4 +43,19 @@ python3 rhythm_pack_transaction.py apply \
   --profile stock-stepmania-flatpak --target "$SONGS_ROOT" --apply --game-stopped
 ```
 
-Automated tests use synthetic text-only temporary roots and fixture-only interruption injection; they do not use a physical device, NAS, mount, or real media. Run `bash tests/test-pack-transaction.sh`, then `bash tests/test-fd-ancestry.sh`, `bash tests/test-versioned-extract.sh`, `bash tests/install-config-preservation.sh`, and `bash tests/test-pack-preview.sh`.
+Automated tests use synthetic temporary roots and fixture-only interruption injection; they do not use a physical device, NAS, mount, or real media. Run `bash tests/test-pack-transaction.sh`, then `bash tests/test-fd-ancestry.sh`, `bash tests/test-versioned-extract.sh`, `bash tests/install-config-preservation.sh`, and `bash tests/test-pack-preview.sh`.
+
+The shell transaction suite uses a synthetic validator stand-in. Qualify the actual
+validator separately with a trusted source root:
+
+```sh
+RHYTHM_VALIDATOR_SOURCE=/path/to/stepmania-song-validator/src \
+  python3 tests/test-real-validator-transaction.py
+```
+
+This lane exercises the real validator against synthetic chart/audio-byte inputs,
+including both runtime selections, receipt ownership, interrupted recovery,
+source/provider refusal and rollback. It fails rather than silently skipping
+when the provider source is not supplied. This is not real-library or physical
+installation evidence. Plans from before diagnostic findings were included must
+be regenerated; removing findings from a plan does not bypass fresh-plan checks.

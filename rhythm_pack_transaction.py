@@ -177,7 +177,8 @@ def load_receipt(state_fd: int, txid: str) -> dict:
         fail("receipt unavailable or invalid")
     ownership = value.get("ownership")
     if ownership is not None and (not isinstance(ownership, dict)
-            or set(ownership) != {"device", "inode", "nonce", "marker"}
+            or set(ownership) != {"device", "inode", "nonce", "marker", "markerIdentity"}
+            or not valid_marker_identity(ownership.get("markerIdentity"))
             or type(ownership["device"]) is not int or ownership["device"] < 0
             or type(ownership["inode"]) is not int or ownership["inode"] < 1
             or not isinstance(ownership["nonce"], str) or len(ownership["nonce"]) != 64
@@ -258,18 +259,54 @@ def path_matches_fd(parent_fd: int, name: str, fd: int) -> bool:
     return stat.S_ISDIR(entry.st_mode) and (entry.st_dev, entry.st_ino) == (opened.st_dev, opened.st_ino)
 
 
+def marker_identity(info) -> dict:
+    return {"device": info.st_dev, "inode": info.st_ino, "bytes": info.st_size,
+            "mtimeNs": info.st_mtime_ns, "ctimeNs": info.st_ctime_ns}
+
+
+def valid_marker_identity(value) -> bool:
+    return (isinstance(value, dict)
+            and set(value) == {"device", "inode", "bytes", "mtimeNs", "ctimeNs"}
+            and all(type(n) is int and n >= 0 for n in value.values())
+            and value["inode"] > 0 and 0 < value["bytes"] <= 4096)
+
+
+def read_ownership_marker(parent_fd: int) -> tuple[bytes, dict]:
+    # Bind bytes and generation metadata to the same opened regular file.
+    # Copying an old marker must not turn a reused directory inode into ownership.
+    fd = os.open(OWNER_MARKER, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+    try:
+        before = os.fstat(fd)
+        identity = marker_identity(before)
+        if not stat.S_ISREG(before.st_mode) or not valid_marker_identity(identity):
+            raise OSError("invalid ownership marker")
+        chunks = []
+        remaining = before.st_size
+        while remaining:
+            block = os.read(fd, remaining)
+            if not block:
+                raise OSError("ownership marker changed while reading")
+            chunks.append(block)
+            remaining -= len(block)
+        if os.read(fd, 1) or marker_identity(os.fstat(fd)) != identity:
+            raise OSError("ownership marker changed while reading")
+        return b"".join(chunks), identity
+    finally:
+        os.close(fd)
+
+
 def verify_ownership(fd: int, receipt: dict) -> bool:
     ownership = receipt.get("ownership")
     if not isinstance(ownership, dict) or stage_identity(fd) != {
             "device": ownership.get("device"), "inode": ownership.get("inode")} :
         return False
     try:
-        marker = read_regular(fd, OWNER_MARKER)
+        marker, identity = read_ownership_marker(fd)
     except OSError:
         return False
     expected = (json.dumps({"id": receipt["id"], "nonce": ownership["nonce"]},
                            sort_keys=True, separators=(",", ":")) + "\n").encode()
-    return marker == expected
+    return marker == expected and identity == ownership.get("markerIdentity")
 
 
 def remove_marker(fd: int, receipt: dict) -> bool:
@@ -470,7 +507,9 @@ def apply(args, hook=None) -> dict:
             write_exclusive(stage_fd, OWNER_MARKER,
                 (json.dumps({"id": txid, "nonce": nonce}, sort_keys=True, separators=(",", ":")) + "\n").encode())
             os.fsync(stage_fd)
-            receipt["ownership"] = dict(stage_identity(stage_fd), nonce=nonce, marker=OWNER_MARKER)
+            _, marker_stamp = read_ownership_marker(stage_fd)
+            receipt["ownership"] = dict(stage_identity(stage_fd), nonce=nonce, marker=OWNER_MARKER,
+                                        markerIdentity=marker_stamp)
             atomic_receipt(state_fd, receipt)
             for item in plan["files"]:
                 staged_item = dict(item, destination="/".join(validate_rel(item["destination"])[1:]))
