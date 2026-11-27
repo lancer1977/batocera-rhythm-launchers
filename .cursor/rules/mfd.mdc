@@ -1,0 +1,15 @@
+---
+description: Use Mapped-Frontier Development for material product and delivery changes.
+alwaysApply: false
+---
+
+For material product, architecture, security, deployment, data, API, or
+operational work, read `@.mfd/core/mfd-contract.md` before making a plan or
+implementation. Use the templates in `@.mfd/templates/` for Phase 0.
+For deployment-aware work, read `@.mfd/deployment.yaml` and validate it with
+`@.mfd/tools/validate_deployment_profile.py` before planning release actions.
+
+Require an owning issue and immutable packet revision before material execution.
+Approval never grants merge, deployment, issue closure, secret access, external
+communication, or a production-success claim. Return a concise deviation brief
+when an approved product or risk boundary changes.

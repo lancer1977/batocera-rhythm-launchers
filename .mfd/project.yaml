@@ -1,0 +1,30 @@
+schema_version: 3
+portfolio:
+  repository: lancer1977/batocera-rhythm-launchers
+  projects:
+    - id: batocera-rhythm-launchers
+      role: app
+  shape:
+    kind: app
+merge_policy:
+  integration_branch: dev
+  protected_branch: main
+  required_checks: []
+  test_tiers:
+    unit:
+      command: bash tests/install-config-preservation.sh && bash tests/test-fd-ancestry.sh && bash tests/test-versioned-extract.sh
+      required_for: [dev, main]
+  escalate_paths:
+    - "**/*secret*"
+    - "**/*credential*"
+    - "**/*auth*"
+    - ".github/workflows/**"
+    - "install-rhythm-from-release.sh"
+    - "rhythm_release_transaction.py"
+  escalate_labels:
+    - decision
+    - security
+    - blocker
+  require_pr_tests: true
+  test_paths:
+    - "tests/*.sh"
